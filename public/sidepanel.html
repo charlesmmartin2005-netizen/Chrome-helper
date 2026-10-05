@@ -43,6 +43,19 @@
       </div>
       <article id="summary" class="summary" aria-live="polite"></article>
       <p id="meta" class="meta" hidden></p>
+
+      <section id="chat" class="chat" aria-label="Questions about this page" hidden>
+        <div id="chat-log" class="chat-log" aria-live="polite"></div>
+        <div id="suggestions" class="suggestions">
+          <button type="button" data-question="Explain this more simply, as if I'm new to the topic.">Explain it simply</button>
+          <button type="button" data-question="What are the key terms and concepts here, and what do they mean?">Key terms</button>
+          <button type="button" data-question="Quiz me on this material.">Quiz me</button>
+        </div>
+        <form id="ask-form" class="ask">
+          <textarea id="ask-input" rows="1" placeholder="Ask a question about this page…" aria-label="Ask a question about this page"></textarea>
+          <button id="ask-send" class="primary" type="submit">Ask</button>
+        </form>
+      </section>
     </main>
 
     <footer>

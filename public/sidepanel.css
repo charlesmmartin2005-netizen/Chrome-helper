@@ -196,6 +196,111 @@ main {
   white-space: pre-line;
 }
 
+.chat {
+  margin-top: 18px;
+}
+
+.msg {
+  overflow-wrap: anywhere;
+}
+
+.msg.user {
+  margin: 14px 0 8px auto;
+  max-width: 85%;
+  width: fit-content;
+  padding: 8px 12px;
+  border-radius: 12px 12px 4px 12px;
+  background: var(--surface);
+  white-space: pre-wrap;
+}
+
+.msg.assistant > :first-child {
+  margin-top: 0;
+}
+
+.msg.assistant p,
+.msg.assistant ul,
+.msg.assistant ol {
+  margin: 0 0 8px;
+}
+
+.msg.assistant ul,
+.msg.assistant ol {
+  padding-left: 20px;
+}
+
+.msg.assistant h2,
+.msg.assistant h3,
+.msg.assistant h4 {
+  font-size: 14px;
+  margin: 12px 0 6px;
+}
+
+.msg.assistant .spinner {
+  display: inline-block;
+  vertical-align: -2px;
+  margin-right: 4px;
+}
+
+.msg.assistant {
+  color: var(--text);
+}
+
+.msg.assistant:has(.spinner) {
+  color: var(--muted);
+}
+
+.msg.error {
+  color: var(--danger);
+}
+
+.msg-meta {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.suggestions button {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+
+.ask {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 0 12px;
+  background: var(--bg);
+}
+
+.ask textarea {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 7px 10px;
+  max-height: 160px;
+}
+
+.ask button.stop {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
+}
+
 footer {
   padding: 10px 16px 14px;
   color: var(--muted);

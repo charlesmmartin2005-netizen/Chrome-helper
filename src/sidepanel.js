@@ -7,6 +7,7 @@ import {
   Anthropic,
   createClient,
   streamSummary,
+  streamAnswer,
   estimateCost,
   describeError,
 } from "./summarize.js";
@@ -39,6 +40,12 @@ const els = {
   noticeAction: $("notice-action"),
   summary: $("summary"),
   meta: $("meta"),
+  chat: $("chat"),
+  chatLog: $("chat-log"),
+  suggestions: $("suggestions"),
+  askForm: $("ask-form"),
+  askInput: $("ask-input"),
+  askSend: $("ask-send"),
 };
 
 let settings;
@@ -47,6 +54,12 @@ let refreshTimer = null;
 let runId = 0;
 let activeStream = null;
 let currentEntry = null;
+// The cache key of currentEntry, and the page content it was made from (null
+// for a saved summary until someone asks a question and the page is re-read).
+let currentKey = null;
+let currentPage = null;
+// The question being answered: { stream, stopped }, or null.
+let asking = null;
 // What the last page extraction tried, for "Copy debug info".
 let runLog = [];
 // What the panel is showing, so repeated tab events for the same page
@@ -79,6 +92,22 @@ async function init() {
   els.copy.addEventListener("click", copySummary);
   els.debug.addEventListener("click", copyDebugInfo);
   els.version.textContent = `v${chrome.runtime.getManifest().version}`;
+  els.askForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (asking) stopAsking();
+    else ask(els.askInput.value);
+  });
+  els.askInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      if (!asking) ask(els.askInput.value);
+    }
+  });
+  els.askInput.addEventListener("input", sizeAskInput);
+  els.suggestions.addEventListener("click", (event) => {
+    const question = event.target.closest("button")?.dataset.question;
+    if (question && !asking) ask(question);
+  });
   els.settings.addEventListener("click", () => chrome.runtime.openOptionsPage());
   els.auto.addEventListener("change", () =>
     saveSettings({ autoSummarize: els.auto.checked }),
@@ -170,6 +199,7 @@ async function refresh(mode) {
     if (myRun !== runId) return;
     if (cached) {
       shown.state = "done";
+      currentKey = key;
       return showSummary(cached, { fromCache: true });
     }
   }
@@ -280,8 +310,11 @@ async function summarize(page, key, myRun) {
       embeddedPdf: Boolean(page.embeddedPdf),
       cutOff: message.stop_reason === "max_tokens",
       createdAt: Date.now(),
+      chat: [],
     };
     shown.state = "done";
+    currentKey = key;
+    currentPage = page;
     showSummary(entry);
     if (finalText) await putCached(key, entry);
   } catch (err) {
@@ -301,6 +334,156 @@ function cancelWork() {
     activeStream.abort();
     activeStream = null;
   }
+  stopAsking();
+}
+
+function stopAsking() {
+  if (!asking) return;
+  asking.stopped = true;
+  asking.stream?.abort();
+}
+
+// ---------------------------------------------------------------- questions
+
+async function ask(rawQuestion) {
+  const question = rawQuestion.trim();
+  if (!question || !currentEntry || asking) return;
+  const entry = currentEntry;
+  const key = currentKey;
+  const myRun = runId;
+  const current = { stream: null, stopped: false };
+  asking = current;
+  els.askInput.value = "";
+  sizeAskInput();
+  els.suggestions.hidden = true;
+  const { answerEl, metaEl } = appendExchange(question);
+  setAsking(true);
+
+  let finished = false;
+  try {
+    if (!currentPage) {
+      answerEl.innerHTML = '<span class="spinner"></span> Reading the page…';
+      const [tab] = await chrome.tabs.query({ active: true, windowId });
+      const page = await extractPage(tab, shown.url);
+      hideStatus();
+      if (myRun !== runId) return;
+      currentPage = page;
+      if (current.stopped) throw new Anthropic.APIUserAbortError();
+    }
+    answerEl.innerHTML = '<span class="spinner"></span> Thinking…';
+    const stream = streamAnswer(createClient(settings.apiKey), {
+      model: settings.model,
+      page: currentPage,
+      summary: entry.text,
+      history: entry.chat ?? [],
+      question,
+    });
+    current.stream = stream;
+
+    let text = "";
+    let renderPending = false;
+    stream.on("text", (delta) => {
+      text += delta;
+      if (renderPending) return;
+      renderPending = true;
+      requestAnimationFrame(() => {
+        renderPending = false;
+        if (finished) return;
+        const follow = nearBottom();
+        answerEl.innerHTML = renderMarkdown(text);
+        if (follow) scrollToBottom();
+      });
+    });
+
+    const message = await stream.finalMessage();
+    finished = true;
+    if (myRun !== runId) return;
+    if (message.stop_reason === "refusal") {
+      answerEl.textContent = "Claude declined to answer that.";
+      answerEl.classList.add("error");
+      return;
+    }
+    const answer = message.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("")
+      .trim();
+    answerEl.innerHTML = renderMarkdown(answer);
+    const turn = { q: question, a: answer, model: message.model, cost: estimateCost(message) };
+    if (message.stop_reason === "max_tokens") turn.cutOff = true;
+    metaEl.textContent = turnMeta(turn);
+    entry.chat = [...(entry.chat ?? []), turn];
+    if (key) await putCached(key, entry);
+  } catch (err) {
+    finished = true;
+    if (myRun !== runId) return;
+    if (err instanceof Anthropic.APIUserAbortError) {
+      if (answerEl.querySelector(".spinner")) answerEl.textContent = "";
+      metaEl.textContent = "Stopped.";
+      return;
+    }
+    answerEl.textContent = describeError(err);
+    answerEl.classList.add("error");
+    hideStatus();
+    if (!els.askInput.value) els.askInput.value = question;
+  } finally {
+    if (asking === current) asking = null;
+    if (myRun === runId) setAsking(false);
+  }
+}
+
+function appendExchange(question, answer) {
+  const questionEl = document.createElement("div");
+  questionEl.className = "msg user";
+  questionEl.textContent = question;
+  const answerEl = document.createElement("div");
+  answerEl.className = "msg assistant";
+  if (answer != null) answerEl.innerHTML = renderMarkdown(answer);
+  const metaEl = document.createElement("div");
+  metaEl.className = "msg-meta";
+  els.chatLog.append(questionEl, answerEl, metaEl);
+  scrollToBottom();
+  return { answerEl, metaEl };
+}
+
+function renderChat(entry) {
+  els.chatLog.replaceChildren();
+  const chat = entry.chat ?? [];
+  for (const turn of chat) appendExchange(turn.q, turn.a).metaEl.textContent = turnMeta(turn);
+  els.suggestions.hidden = chat.length > 0;
+  els.chat.hidden = !entry.text;
+  setAsking(false);
+}
+
+function turnMeta(turn) {
+  const parts = [];
+  if (turn.model && turn.model !== settings.model) {
+    parts.push(`${MODELS[turn.model]?.shortLabel ?? turn.model} (fallback model)`);
+  }
+  if (turn.cost != null) parts.push(formatCost(turn.cost));
+  if (turn.cutOff) parts.push("answer hit the length limit and was cut off");
+  return parts.join(" · ");
+}
+
+function setAsking(busy) {
+  els.askSend.textContent = busy ? "Stop" : "Ask";
+  els.askSend.classList.toggle("stop", busy);
+  for (const button of els.suggestions.querySelectorAll("button")) button.disabled = busy;
+}
+
+function sizeAskInput() {
+  els.askInput.style.height = "auto";
+  els.askInput.style.height = `${Math.min(els.askInput.scrollHeight, 160)}px`;
+}
+
+function nearBottom() {
+  const root = document.scrollingElement;
+  return root.scrollHeight - root.scrollTop - root.clientHeight < 80;
+}
+
+function scrollToBottom() {
+  const root = document.scrollingElement;
+  root.scrollTop = root.scrollHeight;
 }
 
 // ---------------------------------------------------------------- page text
@@ -559,6 +742,10 @@ function showPageHeader(tab) {
 
 function resetView() {
   currentEntry = null;
+  currentKey = null;
+  currentPage = null;
+  els.chat.hidden = true;
+  els.chatLog.replaceChildren();
   hideStatus();
   els.notice.hidden = true;
   els.summary.innerHTML = "";
@@ -608,7 +795,7 @@ function showSummary(entry, { fromCache = false } = {}) {
   parts.push(
     `${entry.usage.input.toLocaleString()} in / ${entry.usage.output.toLocaleString()} out tokens`,
   );
-  if (entry.cost != null) parts.push(`≈ $${entry.cost < 0.01 ? entry.cost.toFixed(3) : entry.cost.toFixed(2)}`);
+  if (entry.cost != null) parts.push(formatCost(entry.cost));
   if (fromCache) parts.push("saved summary");
   const notes = [];
   if (entry.embeddedPdf) notes.push("Summarized the PDF shown on this page.");
@@ -616,6 +803,11 @@ function showSummary(entry, { fromCache = false } = {}) {
   if (entry.cutOff) notes.push("The summary hit the length limit and was cut off.");
   els.meta.textContent = [parts.join(" · "), ...notes].join("\n");
   els.meta.hidden = false;
+  renderChat(entry);
+}
+
+function formatCost(cost) {
+  return `≈ $${cost < 0.01 ? cost.toFixed(3) : cost.toFixed(2)}`;
 }
 
 async function copySummary() {
