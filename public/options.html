@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Page Summarizer Settings</title>
+    <link rel="stylesheet" href="common.css" />
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Page Summarizer</h1>
+      <p class="lead">
+        Click the extension's toolbar icon to open the summary panel. While it's open, it
+        summarizes each page you visit.
+      </p>
+
+      <form id="form">
+        <section>
+          <h2>Anthropic API key</h2>
+          <label for="apiKey">API key</label>
+          <div class="row">
+            <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…" />
+            <button id="toggleKey" type="button">Show</button>
+          </div>
+          <p class="hint">
+            Create a key at
+            <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>.
+            It's stored only in this browser profile and is sent only to Anthropic's API.
+          </p>
+        </section>
+
+        <section>
+          <h2>Summaries</h2>
+          <label for="model">Model</label>
+          <select id="model"></select>
+
+          <label for="length">Length</label>
+          <select id="length"></select>
+        </section>
+
+        <section>
+          <h2>Automatic summaries</h2>
+          <label class="check">
+            <input id="autoSummarize" type="checkbox" />
+            Summarize pages automatically while the summary panel is open
+          </label>
+          <label class="check">
+            <input id="articlesOnly" type="checkbox" />
+            Only summarize automatically when the page looks like an article
+          </label>
+
+          <label for="excludedSites">Never summarize these sites automatically</label>
+          <textarea id="excludedSites" rows="6" spellcheck="false"></textarea>
+          <p class="hint">One site per line. A site also covers its subdomains. You can still press Summarize on these sites.</p>
+        </section>
+
+        <div class="actions">
+          <button class="primary" type="submit">Save</button>
+          <span id="saveStatus" class="save-status" role="status"></span>
+        </div>
+      </form>
+
+      <section class="privacy">
+        <h2>Privacy and cost</h2>
+        <p>
+          To write a summary, the extension sends the page's text (or the PDF) to Anthropic's API using your
+          key. Nothing else is collected, and summaries are kept only until you close the browser.
+        </p>
+        <p>
+          Each summary is billed to your Anthropic account. A typical article costs a few cents with Opus 5.5
+          and less with the other models; the panel shows the estimated cost under each summary.
+        </p>
+      </section>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>
