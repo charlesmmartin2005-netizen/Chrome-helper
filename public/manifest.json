@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Page Summarizer",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Automatically summarizes the article or site you're viewing, using Claude.",
   "minimum_chrome_version": "120",
   "permissions": ["sidePanel", "storage", "scripting"],

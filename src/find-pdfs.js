@@ -73,12 +73,12 @@ export function findEmbeddedPdfs() {
 }
 
 /**
- * Downloads a PDF and returns { data, name } with the file as base64 and the
- * server's file name if it gave one, or { error }.
- * The side panel calls it directly first; if that fails it's injected into
- * the page, where the site's login cookies always apply.
+ * Downloads a file and returns { data, name, contentType } with the file as
+ * base64 and the server's file name if it gave one, or { error }.
+ * The side panel calls it directly first; if that doesn't get a usable file
+ * it's injected into the page, where the site's login cookies always apply.
  */
-export async function fetchPdfInPage(url, maxBytes) {
+export async function fetchFileInPage(url, maxBytes) {
   try {
     const response = await fetch(url, { credentials: "include" });
     if (!response.ok) return { error: `HTTP ${response.status}` };
@@ -86,8 +86,6 @@ export async function fetchPdfInPage(url, maxBytes) {
     const buffer = await response.arrayBuffer();
     if (buffer.byteLength > maxBytes) return { error: "too-large" };
     const bytes = new Uint8Array(buffer);
-    const head = String.fromCharCode(...bytes.subarray(0, 1024));
-    if (!head.includes("%PDF-")) return { error: "not-pdf" };
     let binary = "";
     for (let i = 0; i < bytes.length; i += 0x8000) {
       binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
@@ -104,7 +102,7 @@ export async function fetchPdfInPage(url, maxBytes) {
         name = match[1].trim();
       }
     }
-    return { data: btoa(binary), name };
+    return { data: btoa(binary), name, contentType: response.headers.get("content-type") };
   } catch (err) {
     return { error: err.message };
   }

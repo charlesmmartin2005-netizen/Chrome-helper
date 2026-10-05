@@ -12,13 +12,14 @@ import {
   describeError,
 } from "./summarize.js";
 import { renderMarkdown } from "./markdown.js";
-import { findEmbeddedPdfs, fetchPdfInPage, describeFrame } from "./find-pdfs.js";
+import { findEmbeddedPdfs, fetchFileInPage, describeFrame } from "./find-pdfs.js";
+import { readDocument, FILE_LABELS } from "./documents.js";
 
 const MIN_CHARS = 200;
 // ~75k tokens. Longer pages are cut here (and the panel says so) to keep
 // the cost of a single automatic summary predictable.
 const MAX_CHARS = 300_000;
-const MAX_PDF_BYTES = 20 * 1024 * 1024;
+const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const CACHE_LIMIT = 100;
 const CACHE_PREFIX = "summary|";
 
@@ -231,13 +232,14 @@ async function refresh(mode) {
   }
   if (myRun !== runId) return;
 
-  if (!page.pdfBase64 && page.text.length < MIN_CHARS) {
+  // Files (PDFs, Word, PowerPoint) were already checked when they were read.
+  if (!page.fileKind && page.text.length < MIN_CHARS) {
     shown.state = "idle";
     hideStatus();
     setPrimary("summarize");
     return showNotice("There isn't enough text on this page to summarize.");
   }
-  if (automatic && settings.articlesOnly && !page.readerable && !page.pdfBase64) {
+  if (automatic && settings.articlesOnly && !page.readerable && !page.fileKind) {
     shown.state = "idle";
     hideStatus();
     setPrimary("summarize");
@@ -307,7 +309,8 @@ async function summarize(page, key, myRun) {
       },
       cost: estimateCost(message),
       truncated: Boolean(page.truncated),
-      embeddedPdf: Boolean(page.embeddedPdf),
+      // Set when the summary is of a file shown on the page, not the page.
+      fileKind: page.fromFile ? page.fileKind : null,
       cutOff: message.stop_reason === "max_tokens",
       createdAt: Date.now(),
       chat: [],
@@ -516,23 +519,38 @@ async function extractPage(tab, url) {
     truncated: false,
   };
 
-  let pdf =
+  // A PDF open in the tab, or one shown inside the page.
+  let file = null;
+  const pdf =
     result.contentType === "application/pdf"
       ? { url, frameId: 0 }
       : await findMainPdf(tab.id, result);
-  let file = null;
   if (pdf) {
     showStatus("Downloading the PDF…");
-    file = await downloadPdf(tab.id, pdf);
-    if (!file.data) throw pdfError(file);
+    file = await downloadDocument(tab.id, pdf, ["pdf"]);
+    if (!file.doc) throw downloadError(file);
   } else {
-    ({ pdf, file } = (await findBrightspaceFile(tab.id, url)) ?? {});
+    file = await findBrightspaceFile(tab.id, url);
   }
-  if (file?.data) {
-    page.pdfBase64 = file.data;
-    page.pdfName = file.name || fileName(pdf.url);
-    page.embeddedPdf = pdf.url !== url;
+
+  if (file?.doc) {
+    const { doc } = file;
+    page.fileKind = doc.kind;
+    page.fileName = file.name || fileName(file.url);
+    page.fromFile = file.url !== url;
     page.readerable = true;
+    if (doc.kind === "pdf") {
+      page.pdfBase64 = doc.base64;
+      return page;
+    }
+    page.docText = doc.text;
+    if (page.docText.length > MAX_CHARS) {
+      page.docText = page.docText.slice(0, MAX_CHARS);
+      page.truncated = true;
+    }
+    if (page.docText.trim().length < MIN_CHARS) {
+      throw new Error(`This ${FILE_LABELS[doc.kind]} doesn't contain enough text to summarize.`);
+    }
     return page;
   }
 
@@ -608,11 +626,17 @@ async function findBrightspaceFile(tabId, pageUrl) {
   showStatus("Downloading the course file…");
 
   const tryUrl = async (url) => {
-    const pdf = { url, frameId: 0 };
-    const file = await downloadPdf(tabId, pdf);
-    runLog.push(`Brightspace ${shortUrl(url)}: ${file.data ? "got the PDF" : file.error}`);
-    if (file.error === "too-large") throw pdfError(file);
-    return file.data ? { pdf, file } : null;
+    const file = await downloadDocument(tabId, { url, frameId: 0 }, Object.keys(FILE_LABELS));
+    runLog.push(
+      `Brightspace ${shortUrl(url)}: ${file.doc ? `got a ${file.doc.kind} file` : file.unsupported ?? file.error}`,
+    );
+    if (file.error === "too-large") throw downloadError(file);
+    if (file.unsupported) {
+      throw new Error(
+        `This course file is ${file.unsupported}, which Page Summarizer can't read. It can read PDFs, Word (.docx) and PowerPoint (.pptx) files.`,
+      );
+    }
+    return file.doc ? file : null;
   };
 
   const found = await tryUrl(
@@ -636,33 +660,44 @@ async function brightspaceApiVersion(origin) {
   }
 }
 
-// Returns { data, name } or { error }.
-async function downloadPdf(tabId, pdf) {
-  let outcome = await fetchPdfInPage(pdf.url, MAX_PDF_BYTES);
-  if (!outcome.data && outcome.error !== "too-large") {
+// Downloads target.url and reads it as one of the accepted kinds (see
+// FILE_LABELS). Returns { url, name, doc }, { unsupported } for a document
+// that can't be read, or { error }.
+async function downloadDocument(tabId, target, accept) {
+  const attempt = (download) => {
+    if (!download.data) return { error: download.error };
+    const doc = readDocument(download);
+    if (!doc) return { error: "not a document (perhaps a login page)" };
+    if (doc.unsupported) return { unsupported: doc.unsupported };
+    if (!accept.includes(doc.kind)) return { error: `got a ${doc.kind} file` };
+    return { url: target.url, name: download.name, doc };
+  };
+
+  let result = attempt(await fetchFileInPage(target.url, MAX_FILE_BYTES));
+  if (!result.doc && !result.unsupported && result.error !== "too-large") {
     // Some sites (learning platforms especially) only hand files to their
-    // own pages, so try again from inside the page that shows the PDF.
+    // own pages, so try again from inside the page that shows the file.
     try {
-      const [{ result }] = await chrome.scripting.executeScript({
-        target: { tabId, frameIds: [pdf.frameId] },
-        func: fetchPdfInPage,
-        args: [pdf.url, MAX_PDF_BYTES],
+      const [{ result: download }] = await chrome.scripting.executeScript({
+        target: { tabId, frameIds: [target.frameId] },
+        func: fetchFileInPage,
+        args: [target.url, MAX_FILE_BYTES],
       });
-      if (result) outcome = result;
+      if (download) result = attempt(download);
     } catch (err) {
-      outcome = { error: `${outcome.error}; from the page: ${err.message}` };
+      result = { error: `${result.error ?? result.unsupported}; from the page: ${err.message}` };
     }
   }
-  return outcome;
+  return result;
 }
 
-function pdfError(outcome) {
-  if (outcome.error === "too-large") {
+function downloadError(result) {
+  if (result.error === "too-large") {
     return new Error(
-      `This PDF is too large to summarize (limit ${MAX_PDF_BYTES / 1024 / 1024} MB).`,
+      `This file is too large to summarize (limit ${MAX_FILE_BYTES / 1024 / 1024} MB).`,
     );
   }
-  runLog.push(`PDF download failed: ${outcome.error}`);
+  runLog.push(`Download failed: ${result.unsupported ?? result.error}`);
   return new Error(
     "Couldn't download the PDF shown on this page. Try opening the PDF in its own tab and summarizing it there.",
   );
@@ -798,8 +833,8 @@ function showSummary(entry, { fromCache = false } = {}) {
   if (entry.cost != null) parts.push(formatCost(entry.cost));
   if (fromCache) parts.push("saved summary");
   const notes = [];
-  if (entry.embeddedPdf) notes.push("Summarized the PDF shown on this page.");
-  if (entry.truncated) notes.push("This page was very long, so only the first part was summarized.");
+  if (entry.fileKind) notes.push(`Summarized the ${FILE_LABELS[entry.fileKind]} shown on this page.`);
+  if (entry.truncated) notes.push("This was very long, so only the first part was summarized.");
   if (entry.cutOff) notes.push("The summary hit the length limit and was cut off.");
   els.meta.textContent = [parts.join(" · "), ...notes].join("\n");
   els.meta.hidden = false;
@@ -833,7 +868,7 @@ async function copyDebugInfo() {
   const lines = [
     `Page Summarizer ${chrome.runtime.getManifest().version} debug info`,
     `Page: ${shortUrl(tab?.url)} (${tab?.status})`,
-    `Panel: ${shown.state}${currentEntry ? `, summary from ${currentEntry.embeddedPdf ? "embedded PDF" : "page"}` : ""}`,
+    `Panel: ${shown.state}${currentEntry ? `, summary from ${currentEntry.fileKind ?? "page"}` : ""}`,
     "Last run:",
     ...(runLog.length ? runLog : ["(nothing recorded; the summary may have been a saved one)"]).map(
       (line) => `  ${line}`,
