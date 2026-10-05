@@ -11,6 +11,7 @@ import {
   describeError,
 } from "./summarize.js";
 import { renderMarkdown } from "./markdown.js";
+import { findEmbeddedPdfs, fetchPdfInPage } from "./find-pdfs.js";
 
 const MIN_CHARS = 200;
 // ~75k tokens. Longer pages are cut here (and the panel says so) to keep
@@ -270,6 +271,7 @@ async function summarize(page, key, myRun) {
       },
       cost: estimateCost(message),
       truncated: Boolean(page.truncated),
+      embeddedPdf: Boolean(page.embeddedPdf),
       cutOff: message.stop_reason === "max_tokens",
       createdAt: Date.now(),
     };
@@ -324,9 +326,15 @@ async function extractPage(tab, url) {
     truncated: false,
   };
 
-  if (result.contentType === "application/pdf") {
+  const pdf =
+    result.contentType === "application/pdf"
+      ? { url, frameId: 0 }
+      : await findMainPdf(tab.id, result);
+  if (pdf) {
     showStatus("Downloading the PDF…");
-    page.pdfBase64 = await loadPdf(url);
+    page.pdfBase64 = await loadPdf(tab.id, pdf);
+    page.pdfName = fileName(pdf.url);
+    page.embeddedPdf = pdf.url !== url;
     page.readerable = true;
     return page;
   }
@@ -348,19 +356,70 @@ function accessError(url, err) {
   return new PageAccessError("Chrome doesn't let extensions read this page.");
 }
 
-async function loadPdf(url) {
-  const tooBig = `This PDF is too large to summarize (limit ${MAX_PDF_BYTES / 1024 / 1024} MB).`;
-  const response = await fetch(url, { credentials: "include" });
-  if (!response.ok) throw new Error(`Couldn't download the PDF (HTTP ${response.status}).`);
-  if (Number(response.headers.get("content-length")) > MAX_PDF_BYTES) throw new Error(tooBig);
-  const buffer = await response.arrayBuffer();
-  if (buffer.byteLength > MAX_PDF_BYTES) throw new Error(tooBig);
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+// Sites like Brightspace/D2L show a PDF inside a page rather than opening it
+// in its own tab. When such a viewer is a big part of the window, or the page
+// around it has no article of its own, the PDF is what to summarize.
+async function findMainPdf(tabId, pageResult) {
+  let frames;
+  try {
+    frames = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: findEmbeddedPdfs,
+    });
+  } catch {
+    return null;
   }
-  return btoa(binary);
+  const viewportArea = frames.find((f) => f.frameId === 0)?.result?.viewportArea || 1;
+  let best = null;
+  const offer = (url, area, frameId) => {
+    if (!best || area > best.area) best = { url, area, frameId };
+  };
+  for (const { frameId, result } of frames) {
+    if (!result) continue;
+    if (frameId !== 0 && result.isPdf) offer(result.url, result.viewportArea, frameId);
+    for (const candidate of result.candidates) offer(candidate.url, candidate.area, frameId);
+  }
+  if (!best) return null;
+
+  const pageHasArticle = pageResult.source === "article" && pageResult.text.length >= 3000;
+  const share = best.area / viewportArea;
+  return share >= (pageHasArticle ? 0.5 : 0.1) ? best : null;
+}
+
+async function loadPdf(tabId, pdf) {
+  let outcome = await fetchPdfInPage(pdf.url, MAX_PDF_BYTES);
+  if (!outcome.data && outcome.error !== "too-large") {
+    // Some sites (learning platforms especially) only hand files to their
+    // own pages, so try again from inside the page that shows the PDF.
+    try {
+      const [{ result }] = await chrome.scripting.executeScript({
+        target: { tabId, frameIds: [pdf.frameId] },
+        func: fetchPdfInPage,
+        args: [pdf.url, MAX_PDF_BYTES],
+      });
+      if (result) outcome = result;
+    } catch (err) {
+      console.warn("Page Summarizer couldn't download the PDF from the page:", err);
+    }
+  }
+  if (outcome.data) return outcome.data;
+  if (outcome.error === "too-large") {
+    throw new Error(
+      `This PDF is too large to summarize (limit ${MAX_PDF_BYTES / 1024 / 1024} MB).`,
+    );
+  }
+  console.warn("Page Summarizer couldn't download the PDF:", pdf.url, outcome.error);
+  throw new Error(
+    "Couldn't download the PDF shown on this page. Try opening the PDF in its own tab and summarizing it there.",
+  );
+}
+
+function fileName(url) {
+  try {
+    return decodeURIComponent(new URL(url).pathname.split("/").pop()) || null;
+  } catch {
+    return null;
+  }
 }
 
 function normalizeUrl(rawUrl) {
@@ -471,6 +530,7 @@ function showSummary(entry, { fromCache = false } = {}) {
   if (entry.cost != null) parts.push(`≈ $${entry.cost < 0.01 ? entry.cost.toFixed(3) : entry.cost.toFixed(2)}`);
   if (fromCache) parts.push("saved summary");
   const notes = [];
+  if (entry.embeddedPdf) notes.push("Summarized the PDF shown on this page.");
   if (entry.truncated) notes.push("This page was very long, so only the first part was summarized.");
   if (entry.cutOff) notes.push("The summary hit the length limit and was cut off.");
   els.meta.textContent = [parts.join(" · "), ...notes].join("\n");

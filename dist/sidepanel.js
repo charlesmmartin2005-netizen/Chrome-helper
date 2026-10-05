@@ -3502,9 +3502,9 @@
       throw new Error("`File` is not defined as a global, which is required for file uploads." + (isOldNode ? " Update to Node 20 LTS or newer, or set `globalThis.File` to `import('node:buffer').File`." : ""));
     }
   };
-  function makeFile(fileBits, fileName, options) {
+  function makeFile(fileBits, fileName2, options) {
     checkFileSupport();
-    return new File(fileBits, fileName ?? "", options);
+    return new File(fileBits, fileName2 ?? "", options);
   }
   function getName(value, stripPath) {
     const val = typeof value === "object" && value !== null && ("name" in value && value.name && String(value.name) || "url" in value && value.url && String(value.url) || "filename" in value && value.filename && String(value.filename) || "path" in value && value.path && String(value.path)) || "";
@@ -17347,17 +17347,18 @@ Write the summary in the same language as the page.`;
       page.siteName ? `<site>${escapeTag(page.siteName)}</site>` : null
     ].filter(Boolean).join("\n");
     if (page.pdfBase64) {
+      const ask = page.embeddedPdf ? "The page above is displaying this PDF. Summarize the PDF itself." : "Summarize this document.";
       return [
         {
           type: "document",
           source: { type: "base64", media_type: "application/pdf", data: page.pdfBase64 },
-          title: page.title || void 0
+          title: page.pdfName || page.title || void 0
         },
         { type: "text", text: `<page>
 ${meta}
 </page>
 
-Summarize this document.` }
+${ask}` }
       ];
     }
     const note = page.truncated ? "\n\n(The page was very long, so only the first part of it is included.)" : "";
@@ -17476,6 +17477,84 @@ Summarize this page.`;
     flushParagraph();
     closeList();
     return out.join("");
+  }
+
+  // src/find-pdfs.js
+  function findEmbeddedPdfs() {
+    const MIN_SIDE = 150;
+    function pdfUrl(value, typeIsPdf) {
+      if (!value || value.length > 4096) return null;
+      let url;
+      try {
+        url = new URL(value, document.baseURI);
+      } catch {
+        return null;
+      }
+      if (!["http:", "https:", "file:"].includes(url.protocol)) return null;
+      if (typeIsPdf || /\.pdf$/i.test(url.pathname)) return url.href;
+      for (const param of url.searchParams.values()) {
+        if (/\.pdf($|[?#])/i.test(param) && param !== value) {
+          const inner = pdfUrl(param, false);
+          if (inner) return inner;
+        }
+      }
+      return null;
+    }
+    const candidates = /* @__PURE__ */ new Map();
+    function consider(el) {
+      const typeIsPdf = (el.getAttribute("type") || "").toLowerCase() === "application/pdf";
+      for (const attr of el.attributes) {
+        const name = attr.name.toLowerCase();
+        if (!(name === "src" || name === "data" || name === "file" || name.startsWith("data-"))) {
+          continue;
+        }
+        const url = pdfUrl(attr.value, typeIsPdf && (name === "src" || name === "data"));
+        if (!url) continue;
+        const rect = el.getBoundingClientRect();
+        if (rect.width < MIN_SIDE || rect.height < MIN_SIDE) continue;
+        const area = rect.width * rect.height;
+        if (area > (candidates.get(url) ?? 0)) candidates.set(url, area);
+      }
+    }
+    function walk(root) {
+      for (const el of root.querySelectorAll("*")) {
+        if (el.attributes.length) consider(el);
+        const shadow = chrome.dom?.openOrClosedShadowRoot?.(el) ?? el.shadowRoot;
+        if (shadow) walk(shadow);
+      }
+    }
+    const isPdf = document.contentType === "application/pdf";
+    if (!isPdf) {
+      try {
+        walk(document);
+      } catch {
+      }
+    }
+    return {
+      isPdf,
+      url: location.href,
+      viewportArea: innerWidth * innerHeight,
+      candidates: [...candidates].map(([url, area]) => ({ url, area }))
+    };
+  }
+  async function fetchPdfInPage(url, maxBytes) {
+    try {
+      const response = await fetch(url, { credentials: "include" });
+      if (!response.ok) return { error: `HTTP ${response.status}` };
+      if (Number(response.headers.get("content-length")) > maxBytes) return { error: "too-large" };
+      const buffer = await response.arrayBuffer();
+      if (buffer.byteLength > maxBytes) return { error: "too-large" };
+      const bytes = new Uint8Array(buffer);
+      const head = String.fromCharCode(...bytes.subarray(0, 1024));
+      if (!head.includes("%PDF-")) return { error: "not-pdf" };
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += 32768) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
+      }
+      return { data: btoa(binary) };
+    } catch (err) {
+      return { error: err.message };
+    }
   }
 
   // src/sidepanel.js
@@ -17687,6 +17766,7 @@ Summarize this page.`;
         },
         cost: estimateCost(message),
         truncated: Boolean(page.truncated),
+        embeddedPdf: Boolean(page.embeddedPdf),
         cutOff: message.stop_reason === "max_tokens",
         createdAt: Date.now()
       };
@@ -17735,9 +17815,12 @@ Summarize this page.`;
       text: result.text ?? "",
       truncated: false
     };
-    if (result.contentType === "application/pdf") {
+    const pdf = result.contentType === "application/pdf" ? { url, frameId: 0 } : await findMainPdf(tab.id, result);
+    if (pdf) {
       showStatus("Downloading the PDF\u2026");
-      page.pdfBase64 = await loadPdf(url);
+      page.pdfBase64 = await loadPdf(tab.id, pdf);
+      page.pdfName = fileName(pdf.url);
+      page.embeddedPdf = pdf.url !== url;
       page.readerable = true;
       return page;
     }
@@ -17756,19 +17839,62 @@ Summarize this page.`;
     console.warn("Page Summarizer couldn't read the page:", err);
     return new PageAccessError("Chrome doesn't let extensions read this page.");
   }
-  async function loadPdf(url) {
-    const tooBig = `This PDF is too large to summarize (limit ${MAX_PDF_BYTES / 1024 / 1024} MB).`;
-    const response = await fetch(url, { credentials: "include" });
-    if (!response.ok) throw new Error(`Couldn't download the PDF (HTTP ${response.status}).`);
-    if (Number(response.headers.get("content-length")) > MAX_PDF_BYTES) throw new Error(tooBig);
-    const buffer = await response.arrayBuffer();
-    if (buffer.byteLength > MAX_PDF_BYTES) throw new Error(tooBig);
-    const bytes = new Uint8Array(buffer);
-    let binary = "";
-    for (let i = 0; i < bytes.length; i += 32768) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
+  async function findMainPdf(tabId, pageResult) {
+    let frames;
+    try {
+      frames = await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        func: findEmbeddedPdfs
+      });
+    } catch {
+      return null;
     }
-    return btoa(binary);
+    const viewportArea = frames.find((f) => f.frameId === 0)?.result?.viewportArea || 1;
+    let best = null;
+    const offer = (url, area, frameId) => {
+      if (!best || area > best.area) best = { url, area, frameId };
+    };
+    for (const { frameId, result } of frames) {
+      if (!result) continue;
+      if (frameId !== 0 && result.isPdf) offer(result.url, result.viewportArea, frameId);
+      for (const candidate of result.candidates) offer(candidate.url, candidate.area, frameId);
+    }
+    if (!best) return null;
+    const pageHasArticle = pageResult.source === "article" && pageResult.text.length >= 3e3;
+    const share = best.area / viewportArea;
+    return share >= (pageHasArticle ? 0.5 : 0.1) ? best : null;
+  }
+  async function loadPdf(tabId, pdf) {
+    let outcome = await fetchPdfInPage(pdf.url, MAX_PDF_BYTES);
+    if (!outcome.data && outcome.error !== "too-large") {
+      try {
+        const [{ result }] = await chrome.scripting.executeScript({
+          target: { tabId, frameIds: [pdf.frameId] },
+          func: fetchPdfInPage,
+          args: [pdf.url, MAX_PDF_BYTES]
+        });
+        if (result) outcome = result;
+      } catch (err) {
+        console.warn("Page Summarizer couldn't download the PDF from the page:", err);
+      }
+    }
+    if (outcome.data) return outcome.data;
+    if (outcome.error === "too-large") {
+      throw new Error(
+        `This PDF is too large to summarize (limit ${MAX_PDF_BYTES / 1024 / 1024} MB).`
+      );
+    }
+    console.warn("Page Summarizer couldn't download the PDF:", pdf.url, outcome.error);
+    throw new Error(
+      "Couldn't download the PDF shown on this page. Try opening the PDF in its own tab and summarizing it there."
+    );
+  }
+  function fileName(url) {
+    try {
+      return decodeURIComponent(new URL(url).pathname.split("/").pop()) || null;
+    } catch {
+      return null;
+    }
   }
   function normalizeUrl(rawUrl) {
     if (!rawUrl) return null;
@@ -17862,6 +17988,7 @@ Summarize this page.`;
     if (entry.cost != null) parts.push(`\u2248 $${entry.cost < 0.01 ? entry.cost.toFixed(3) : entry.cost.toFixed(2)}`);
     if (fromCache) parts.push("saved summary");
     const notes = [];
+    if (entry.embeddedPdf) notes.push("Summarized the PDF shown on this page.");
     if (entry.truncated) notes.push("This page was very long, so only the first part was summarized.");
     if (entry.cutOff) notes.push("The summary hit the length limit and was cut off.");
     els.meta.textContent = [parts.join(" \xB7 "), ...notes].join("\n");

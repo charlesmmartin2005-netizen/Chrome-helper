@@ -50,13 +50,16 @@ function userContent(page) {
     .join("\n");
 
   if (page.pdfBase64) {
+    const ask = page.embeddedPdf
+      ? "The page above is displaying this PDF. Summarize the PDF itself."
+      : "Summarize this document.";
     return [
       {
         type: "document",
         source: { type: "base64", media_type: "application/pdf", data: page.pdfBase64 },
-        title: page.title || undefined,
+        title: page.pdfName || page.title || undefined,
       },
-      { type: "text", text: `<page>\n${meta}\n</page>\n\nSummarize this document.` },
+      { type: "text", text: `<page>\n${meta}\n</page>\n\n${ask}` },
     ];
   }
 
