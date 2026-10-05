@@ -17,6 +17,7 @@ function setStatus(text, isError = false) {
 }
 
 async function init() {
+  $("version").textContent = `Version ${chrome.runtime.getManifest().version}`;
   fillSelect($("model"), Object.fromEntries(Object.entries(MODELS).map(([id, m]) => [id, m.label])));
   fillSelect($("length"), LENGTHS);
 

@@ -9,7 +9,7 @@ Click the toolbar icon to open a side panel. While the panel is open, it follows
 - **Automatic summaries**: summarizes each page as it loads and when you switch tabs. You can turn this off with the **Auto** switch.
 - **Article detection**: by default it only summarizes automatically when the page looks like an article. On other pages (apps, dashboards, search results), press **Summarize** to get a summary anyway.
 - **Clean text extraction**: uses Mozilla's Readability (the engine behind Firefox Reader View) to remove navigation, ads and footers before anything is sent.
-- **PDFs**: PDFs are sent to Claude as documents. This works when a PDF is open in its own tab and when a site shows it inside a page, like course files in Brightspace/D2L.
+- **PDFs**: PDFs are sent to Claude as documents. This works when a PDF is open in its own tab and when a site shows it inside a page. On Brightspace/D2L course pages, the extension downloads the course file directly, the same way the page's Download button does.
 - **Saved summaries**: going back to a page you've already summarized shows the saved summary right away, with no new request. Saved summaries are cleared when you close the browser.
 - **Excluded sites**: email and messaging sites are excluded from automatic summaries by default. You can edit the list.
 - **Cost display**: each summary shows its token usage and an estimated cost.
@@ -38,6 +38,7 @@ Requires Chrome 120 or newer.
 | **Copy** | Copies the summary as Markdown |
 | **Auto** switch | Turns automatic summaries on or off |
 | ⚙ | Opens the settings |
+| **Copy debug info** (bottom of the panel) | Copies a description of the page's structure (frames, viewers and file links, with query strings removed) to help diagnose a page the extension can't read |
 
 In **Settings** you can choose:
 
@@ -64,7 +65,8 @@ Automatic summaries only run while the side panel is open. They only cover artic
 - `src/background.js`: makes the toolbar icon open the side panel, and opens the settings page on first install.
 - `src/sidepanel.js`: tracks the active tab, decides whether to summarize, extracts the page, streams the summary and caches it in `chrome.storage.session`.
 - `src/content.js`: injected into the page on demand. It runs Readability and returns the article text with headings and lists preserved.
-- `src/find-pdfs.js`: finds PDFs shown inside a page, including inside iframes, PDF.js viewers and shadow DOM. It also downloads them; if the site only gives the file to its own pages, it retries the download from inside the page.
+- `src/find-pdfs.js`: finds PDFs shown inside a page, including inside iframes, PDF.js viewers and shadow DOM. It also downloads them; if the site only gives the file to its own pages, it retries the download from inside the page. It also contains the page inspector behind **Copy debug info**.
+- Brightspace/D2L topic pages (`/d2l/le/content/{course}/viewContent/{topic}/View` and `/d2l/le/lessons/{course}/topics/{topic}`) are handled in `src/sidepanel.js`. It fetches the topic's file from the Download button's address and falls back to Brightspace's `/d2l/api/le/{version}/{course}/content/topics/{topic}/file` API.
 - `src/summarize.js`: calls the Claude API with the official [Anthropic TypeScript/JavaScript SDK](https://github.com/anthropics/anthropic-sdk-typescript), streaming the response. It sets low effort, because summaries don't need deep reasoning. On Opus and Sonnet it also turns on server-side refusal fallbacks (`fallbacks: "default"`): if the model's safety filter declines a page, the API retries on Anthropic's recommended fallback model.
 - `src/markdown.js`: a small Markdown renderer that escapes all HTML, so a summary can't inject markup into the panel.
 - `src/settings.js` and `src/options.js`: settings storage and the settings page.

@@ -201,3 +201,16 @@ footer {
   color: var(--muted);
   font-size: 11px;
 }
+
+footer p {
+  margin: 0 0 4px;
+}
+
+button.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: inherit;
+  text-decoration: underline;
+}

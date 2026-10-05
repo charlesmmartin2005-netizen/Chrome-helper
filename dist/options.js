@@ -17352,6 +17352,7 @@ Please migrate to a newer model. Visit https://docs.anthropic.com/en/docs/resour
     status.classList.toggle("error", isError);
   }
   async function init() {
+    $("version").textContent = `Version ${chrome.runtime.getManifest().version}`;
     fillSelect($("model"), Object.fromEntries(Object.entries(MODELS).map(([id, m]) => [id, m.label])));
     fillSelect($("length"), LENGTHS);
     const settings = await loadSettings();

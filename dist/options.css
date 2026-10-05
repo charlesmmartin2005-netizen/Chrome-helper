@@ -110,3 +110,9 @@ a {
   margin: 0 0 8px;
   color: var(--muted);
 }
+
+.version {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0;
+}

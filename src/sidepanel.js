@@ -11,7 +11,7 @@ import {
   describeError,
 } from "./summarize.js";
 import { renderMarkdown } from "./markdown.js";
-import { findEmbeddedPdfs, fetchPdfInPage } from "./find-pdfs.js";
+import { findEmbeddedPdfs, fetchPdfInPage, describeFrame } from "./find-pdfs.js";
 
 const MIN_CHARS = 200;
 // ~75k tokens. Longer pages are cut here (and the panel says so) to keep
@@ -28,6 +28,8 @@ const els = {
   host: $("page-host"),
   primary: $("primary"),
   copy: $("copy"),
+  debug: $("debug"),
+  version: $("version"),
   auto: $("auto"),
   settings: $("settings"),
   status: $("status"),
@@ -45,6 +47,8 @@ let refreshTimer = null;
 let runId = 0;
 let activeStream = null;
 let currentEntry = null;
+// What the last page extraction tried, for "Copy debug info".
+let runLog = [];
 // What the panel is showing, so repeated tab events for the same page
 // don't restart work. state: idle | working | done | waiting | blocked
 let shown = { tabId: null, url: null, state: "idle" };
@@ -73,6 +77,8 @@ async function init() {
 
   els.primary.addEventListener("click", onPrimaryClick);
   els.copy.addEventListener("click", copySummary);
+  els.debug.addEventListener("click", copyDebugInfo);
+  els.version.textContent = `v${chrome.runtime.getManifest().version}`;
   els.settings.addEventListener("click", () => chrome.runtime.openOptionsPage());
   els.auto.addEventListener("change", () =>
     saveSettings({ autoSummarize: els.auto.checked }),
@@ -300,6 +306,7 @@ function cancelWork() {
 // ---------------------------------------------------------------- page text
 
 async function extractPage(tab, url) {
+  runLog = [];
   let result;
   try {
     await chrome.scripting.executeScript({
@@ -326,14 +333,21 @@ async function extractPage(tab, url) {
     truncated: false,
   };
 
-  const pdf =
+  let pdf =
     result.contentType === "application/pdf"
       ? { url, frameId: 0 }
       : await findMainPdf(tab.id, result);
+  let file = null;
   if (pdf) {
     showStatus("Downloading the PDF…");
-    page.pdfBase64 = await loadPdf(tab.id, pdf);
-    page.pdfName = fileName(pdf.url);
+    file = await downloadPdf(tab.id, pdf);
+    if (!file.data) throw pdfError(file);
+  } else {
+    ({ pdf, file } = (await findBrightspaceFile(tab.id, url)) ?? {});
+  }
+  if (file?.data) {
+    page.pdfBase64 = file.data;
+    page.pdfName = file.name || fileName(pdf.url);
     page.embeddedPdf = pdf.url !== url;
     page.readerable = true;
     return page;
@@ -366,7 +380,8 @@ async function findMainPdf(tabId, pageResult) {
       target: { tabId, allFrames: true },
       func: findEmbeddedPdfs,
     });
-  } catch {
+  } catch (err) {
+    runLog.push(`Frame scan failed: ${err.message}`);
     return null;
   }
   const viewportArea = frames.find((f) => f.frameId === 0)?.result?.viewportArea || 1;
@@ -379,14 +394,67 @@ async function findMainPdf(tabId, pageResult) {
     if (frameId !== 0 && result.isPdf) offer(result.url, result.viewportArea, frameId);
     for (const candidate of result.candidates) offer(candidate.url, candidate.area, frameId);
   }
-  if (!best) return null;
+  if (!best) {
+    runLog.push(`Frame scan: ${frames.length} frame(s), no PDF found`);
+    return null;
+  }
 
   const pageHasArticle = pageResult.source === "article" && pageResult.text.length >= 3000;
   const share = best.area / viewportArea;
-  return share >= (pageHasArticle ? 0.5 : 0.1) ? best : null;
+  const use = share >= (pageHasArticle ? 0.5 : 0.1);
+  runLog.push(
+    `Frame scan: PDF ${shortUrl(best.url)} covers ${Math.round(share * 100)}% of the window` +
+      (use ? "" : ", too small to use"),
+  );
+  return use ? best : null;
 }
 
-async function loadPdf(tabId, pdf) {
+// Brightspace (D2L) topic pages can show a course file without the browser
+// ever loading the PDF itself (the viewer may draw server-rendered pages), so
+// fetch the file behind the topic the same way its Download button does.
+// Topic pages look like /d2l/le/content/{course}/viewContent/{topic}/View
+// or, in the newer lessons view, /d2l/le/lessons/{course}/topics/{topic}.
+const BRIGHTSPACE_TOPIC = /^\/d2l\/le\/(?:content\/(\d+)\/viewContent|lessons\/(\d+)\/topics)\/(\d+)/;
+
+async function findBrightspaceFile(tabId, pageUrl) {
+  const { origin, pathname } = new URL(pageUrl);
+  const match = pathname.match(BRIGHTSPACE_TOPIC);
+  if (!match) return null;
+  const course = match[1] ?? match[2];
+  const topic = match[3];
+  showStatus("Downloading the course file…");
+
+  const tryUrl = async (url) => {
+    const pdf = { url, frameId: 0 };
+    const file = await downloadPdf(tabId, pdf);
+    runLog.push(`Brightspace ${shortUrl(url)}: ${file.data ? "got the PDF" : file.error}`);
+    if (file.error === "too-large") throw pdfError(file);
+    return file.data ? { pdf, file } : null;
+  };
+
+  const found = await tryUrl(
+    `${origin}/d2l/le/content/${course}/topics/files/download/${topic}/DirectFileTopicDownload`,
+  );
+  if (found) return found;
+  // Fall back to Brightspace's documented API route for a topic's file.
+  const version = await brightspaceApiVersion(origin);
+  if (!version) return null;
+  return tryUrl(`${origin}/d2l/api/le/${version}/${course}/content/topics/${topic}/file?stream=true`);
+}
+
+async function brightspaceApiVersion(origin) {
+  try {
+    const response = await fetch(`${origin}/d2l/api/versions/le`, { credentials: "include" });
+    const { LatestVersion } = await response.json();
+    return /^\d+\.\d+$/.test(LatestVersion) ? LatestVersion : null;
+  } catch (err) {
+    runLog.push(`Brightspace API version lookup failed: ${err.message}`);
+    return null;
+  }
+}
+
+// Returns { data, name } or { error }.
+async function downloadPdf(tabId, pdf) {
   let outcome = await fetchPdfInPage(pdf.url, MAX_PDF_BYTES);
   if (!outcome.data && outcome.error !== "too-large") {
     // Some sites (learning platforms especially) only hand files to their
@@ -399,19 +467,32 @@ async function loadPdf(tabId, pdf) {
       });
       if (result) outcome = result;
     } catch (err) {
-      console.warn("Page Summarizer couldn't download the PDF from the page:", err);
+      outcome = { error: `${outcome.error}; from the page: ${err.message}` };
     }
   }
-  if (outcome.data) return outcome.data;
+  return outcome;
+}
+
+function pdfError(outcome) {
   if (outcome.error === "too-large") {
-    throw new Error(
+    return new Error(
       `This PDF is too large to summarize (limit ${MAX_PDF_BYTES / 1024 / 1024} MB).`,
     );
   }
-  console.warn("Page Summarizer couldn't download the PDF:", pdf.url, outcome.error);
-  throw new Error(
+  runLog.push(`PDF download failed: ${outcome.error}`);
+  return new Error(
     "Couldn't download the PDF shown on this page. Try opening the PDF in its own tab and summarizing it there.",
   );
+}
+
+// Origin and path only: query strings can carry session tokens.
+function shortUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.origin + url.pathname + (url.search ? "?…" : "");
+  } catch {
+    return String(value);
+  }
 }
 
 function fileName(url) {
@@ -550,4 +631,41 @@ async function copySummary() {
 function flashCopy(label) {
   els.copy.textContent = label;
   setTimeout(() => (els.copy.textContent = "Copy"), 1500);
+}
+
+// Copies a description of the current page's structure (frames, embedded
+// viewers, file links) to help diagnose pages the extension can't read.
+// Query strings are removed from every URL.
+async function copyDebugInfo() {
+  const [tab] = await chrome.tabs.query({ active: true, windowId });
+  const lines = [
+    `Page Summarizer ${chrome.runtime.getManifest().version} debug info`,
+    `Page: ${shortUrl(tab?.url)} (${tab?.status})`,
+    `Panel: ${shown.state}${currentEntry ? `, summary from ${currentEntry.embeddedPdf ? "embedded PDF" : "page"}` : ""}`,
+    "Last run:",
+    ...(runLog.length ? runLog : ["(nothing recorded; the summary may have been a saved one)"]).map(
+      (line) => `  ${line}`,
+    ),
+  ];
+  try {
+    const frames = await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true },
+      func: describeFrame,
+    });
+    for (const { frameId, result } of frames) {
+      if (!result) continue;
+      lines.push(`Frame ${frameId}: ${result.url} [${result.contentType}] ${result.size}`);
+      for (const item of result.items) lines.push(`  ${item}`);
+      if (result.tags.length) lines.push(`  custom elements: ${result.tags.join(", ")}`);
+    }
+  } catch (err) {
+    lines.push(`Couldn't inspect the page: ${err.message}`);
+  }
+  try {
+    await navigator.clipboard.writeText(lines.join("\n"));
+    els.debug.textContent = "Copied — paste it to whoever is helping you";
+  } catch {
+    els.debug.textContent = "Copy failed";
+  }
+  setTimeout(() => (els.debug.textContent = "Copy debug info"), 2500);
 }
