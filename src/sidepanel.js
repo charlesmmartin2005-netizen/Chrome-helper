@@ -2,7 +2,7 @@
 // finishes loading (or you switch tabs) it extracts the page text, asks Claude
 // for a summary and streams it in. Summaries are cached for the browser
 // session so switching back to a tab is instant and free.
-import { loadSettings, saveSettings, isExcluded, MODELS, STYLES } from "./settings.js";
+import { loadSettings, saveSettings, isExcluded, MODELS, STYLES, DEFAULT_SETTINGS } from "./settings.js";
 import {
   Anthropic,
   createClient,
@@ -12,7 +12,24 @@ import {
   describeError,
   TOOLS,
   selectionQuestion,
+  streamDigest,
+  streamCompare,
+  streamSynthesis,
+  whatsNewQuestion,
 } from "./summarize.js";
+import { fingerprint, findSimilar, remember } from "./history.js";
+import {
+  loadNotebook,
+  addEntry,
+  removeEntry,
+  addProject,
+  removeProject,
+  saveSynthesis,
+  loadSynthesis,
+  toMarkdown,
+  DEFAULT_PROJECT,
+} from "./notebook.js";
+import { listTabs, readTabs, estimateTokens, DIGEST_CHARS, COMPARE_CHARS } from "./tabs.js";
 import { renderMarkdown } from "./markdown.js";
 import { findEmbeddedPdfs, fetchFileInPage, describeFrame } from "./find-pdfs.js";
 import { readDocument, FILE_LABELS } from "./documents.js";
@@ -45,6 +62,43 @@ const els = {
   noticeAction: $("notice-action"),
   summary: $("summary"),
   meta: $("meta"),
+  seen: $("seen"),
+  seenText: $("seen-text"),
+  seenAction: $("seen-action"),
+  save: $("save"),
+  views: $("views"),
+  // Tabs view
+  tabsList: $("tabs-list"),
+  digest: $("digest"),
+  compare: $("compare"),
+  tabsConfirm: $("tabs-confirm"),
+  tabsEstimate: $("tabs-estimate"),
+  tabsRun: $("tabs-run"),
+  tabsCancel: $("tabs-cancel"),
+  tabsStatus: $("tabs-status"),
+  tabsStatusText: $("tabs-status-text"),
+  tabsNotice: $("tabs-notice"),
+  tabsNoticeText: $("tabs-notice-text"),
+  tabsResult: $("tabs-result"),
+  tabsMeta: $("tabs-meta"),
+  // Notebook view
+  project: $("project"),
+  newProject: $("new-project"),
+  newProjectForm: $("new-project-form"),
+  newProjectName: $("new-project-name"),
+  deleteProject: $("delete-project"),
+  notebookEmpty: $("notebook-empty"),
+  notebookList: $("notebook-list"),
+  synthesize: $("synthesize"),
+  notebookCopy: $("notebook-copy"),
+  notebookDownload: $("notebook-download"),
+  notebookStatus: $("notebook-status"),
+  notebookStatusText: $("notebook-status-text"),
+  notebookNotice: $("notebook-notice"),
+  notebookNoticeText: $("notebook-notice-text"),
+  synthesis: $("synthesis"),
+  synthesisSources: $("synthesis-sources"),
+  synthesisMeta: $("synthesis-meta"),
   chat: $("chat"),
   chatLog: $("chat-log"),
   tools: $("tools"),
@@ -96,6 +150,13 @@ async function init() {
   els.primary.addEventListener("click", onPrimaryClick);
   els.copy.addEventListener("click", copySummary);
   els.listen.addEventListener("click", toggleListen);
+  els.save.addEventListener("click", saveToNotebook);
+  els.views.addEventListener("click", (event) => {
+    const view = event.target.closest("button")?.dataset.view;
+    if (view) showView(view);
+  });
+  initTabsView();
+  initNotebookView();
   for (const [value, label] of Object.entries(STYLES)) els.style.add(new Option(label, value));
   els.style.value = settings.style;
   els.style.addEventListener("change", () => saveSettings({ style: els.style.value }));
@@ -131,8 +192,11 @@ async function init() {
 }
 
 async function onStorageChanged(changes, area) {
-  if (area !== "local") return;
+  // The notebook and reading history live in the same storage area; only
+  // settings changes matter here.
+  if (area !== "local" || !Object.keys(changes).some((k) => k in DEFAULT_SETTINGS)) return;
   settings = await loadSettings();
+  if (changes.notebookProject) currentProject = settings.notebookProject;
   els.auto.checked = settings.autoSummarize;
   els.style.value = settings.style;
   // Choosing a style in the panel is a request for that summary now.
@@ -218,6 +282,29 @@ async function refresh(mode) {
       shown.state = "done";
       currentKey = key;
       return showSummary(cached, { fromCache: true });
+    }
+    // After a restart the session cache is empty, but the reading history
+    // may still have this page's summary: on an automatic visit, reuse it
+    // instead of paying again (Summarize and a style change always regenerate).
+    if (settings.keepHistory && mode === "auto") {
+      const { sameUrl } = await findSimilar(url, null);
+      if (myRun !== runId) return;
+      if (sameUrl?.summary && (sameUrl.style ?? "general") === settings.style) {
+        const entry = {
+          text: sameUrl.summary,
+          model: sameUrl.model ?? settings.model,
+          usage: null,
+          cost: null,
+          createdAt: Date.now(),
+          chat: [],
+          source: { title: sameUrl.title, authors: [], published: null, siteName: null },
+          fromHistory: sameUrl.savedAt,
+        };
+        shown.state = "done";
+        currentKey = key;
+        await putCached(key, entry);
+        return showSummary(entry, { fromCache: true });
+      }
     }
   }
 
@@ -332,12 +419,14 @@ async function summarize(page, key, myRun) {
       cutOff: message.stop_reason === "max_tokens",
       createdAt: Date.now(),
       chat: [],
+      source: sourceOf(page),
     };
     shown.state = "done";
     currentKey = key;
     currentPage = page;
     showSummary(entry);
     if (finalText) await putCached(key, entry);
+    if (finalText) await checkHistory(page, entry, myRun);
   } catch (err) {
     finished = true;
     if (myRun !== runId || err instanceof Anthropic.APIUserAbortError) return;
@@ -348,6 +437,47 @@ async function summarize(page, key, myRun) {
   } finally {
     if (activeStream === stream) activeStream = null;
   }
+}
+
+// What the notebook and citations need to know about where a summary came from.
+function sourceOf(page) {
+  return {
+    title: page.fileName && page.fromFile ? `${page.fileName} (${page.title})` : page.title,
+    authors: page.meta?.authors ?? (page.byline ? [page.byline.replace(/^by\s+/i, "")] : []),
+    published: page.meta?.published ?? null,
+    siteName: page.siteName ?? page.meta?.siteName ?? null,
+  };
+}
+
+// After a fresh summary: note when the page mostly repeats something read
+// before, then remember this page.
+async function checkHistory(page, entry, myRun) {
+  if (!settings.keepHistory) return;
+  const sig = fingerprint(page.docText ?? page.text);
+  try {
+    const { similar } = await findSimilar(page.url, sig);
+    if (myRun === runId && similar) {
+      const when = new Date(similar.entry.savedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+      showSeen(
+        `This looks ${similar.score >= 0.8 ? "almost identical" : "very similar"} to something you read on ${when}: “${similar.entry.title}”.`,
+        "What's new here?",
+        () => ask(whatsNewQuestion(similar.entry.title, similar.entry.summary), { label: `What's new compared to “${similar.entry.title}”?` }),
+      );
+    }
+    await remember({ url: page.url, title: entry.source?.title ?? page.title, summary: entry.text, sig, model: entry.model, style: settings.style });
+  } catch (err) {
+    console.warn("Reading history:", err);
+  }
+}
+
+function showSeen(text, label, onClick) {
+  els.seenText.textContent = text;
+  els.seenAction.textContent = label;
+  els.seenAction.onclick = () => {
+    els.seen.hidden = true;
+    onClick();
+  };
+  els.seen.hidden = false;
 }
 
 function cancelWork() {
@@ -967,6 +1097,8 @@ function resetView() {
   els.meta.hidden = true;
   els.copy.hidden = true;
   els.listen.hidden = true;
+  els.save.hidden = true;
+  els.seen.hidden = true;
 }
 
 function setPrimary(kind, { disabled = false } = {}) {
@@ -1009,11 +1141,18 @@ function showSummary(entry, { fromCache = false } = {}) {
   if (entry.requestedModel && entry.model !== entry.requestedModel) {
     parts[0] += " (fallback model)";
   }
-  parts.push(
-    `${entry.usage.input.toLocaleString()} in / ${entry.usage.output.toLocaleString()} out tokens`,
-  );
+  if (entry.usage) {
+    parts.push(
+      `${entry.usage.input.toLocaleString()} in / ${entry.usage.output.toLocaleString()} out tokens`,
+    );
+  }
   if (entry.cost != null) parts.push(formatCost(entry.cost));
-  if (fromCache) parts.push("saved summary");
+  if (entry.fromHistory) {
+    parts.push(`from your reading history (${new Date(entry.fromHistory).toLocaleDateString(undefined, { month: "short", day: "numeric" })})`);
+  } else if (fromCache) parts.push("saved summary");
+  els.save.hidden = !entry.text;
+  els.save.disabled = false;
+  els.save.textContent = "Save to notebook";
   const notes = [];
   if (entry.fileKind) notes.push(`Summarized the ${FILE_LABELS[entry.fileKind]} shown on this page.`);
   if (entry.truncated) notes.push("This was very long, so only the first part was summarized.");
@@ -1118,4 +1257,487 @@ async function copyDebugInfo() {
     els.debug.textContent = "Copy failed";
   }
   setTimeout(() => (els.debug.textContent = "Copy debug info"), 2500);
+}
+
+// ---------------------------------------------------------------- views
+
+function showView(name) {
+  for (const button of els.views.querySelectorAll("button")) {
+    button.classList.toggle("current", button.dataset.view === name);
+  }
+  for (const view of document.querySelectorAll(".view")) view.hidden = view.id !== `${name}-view`;
+  if (name === "tabs") loadTabsView();
+  if (name === "notebook") loadNotebookView();
+}
+
+// ---------------------------------------------------------------- notebook
+
+async function saveToNotebook() {
+  if (!currentEntry?.text) return;
+  const source = currentEntry.source ?? { title: els.title.textContent, authors: [], published: null, siteName: null };
+  await addEntry({
+    url: shown.url,
+    title: source.title,
+    authors: source.authors ?? [],
+    published: source.published ?? null,
+    siteName: source.siteName ?? null,
+    summary: currentEntry.text,
+    project: settings.notebookProject || DEFAULT_PROJECT,
+  });
+  els.save.textContent = `Saved to ${settings.notebookProject || DEFAULT_PROJECT} ✓`;
+  els.save.disabled = true;
+  if (!document.getElementById("notebook-view").hidden) loadNotebookView();
+}
+
+let notebook = { entries: [], projects: [DEFAULT_PROJECT], syntheses: {} };
+let synthesisStream = null;
+let currentProject = DEFAULT_PROJECT;
+
+async function setProject(name) {
+  currentProject = name;
+  await saveSettings({ notebookProject: name });
+}
+
+function initNotebookView() {
+  els.project.addEventListener("change", async () => {
+    await setProject(els.project.value);
+    renderNotebook();
+  });
+  els.newProject.addEventListener("click", () => {
+    els.newProjectForm.hidden = !els.newProjectForm.hidden;
+    if (!els.newProjectForm.hidden) els.newProjectName.focus();
+  });
+  els.newProjectForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const name = els.newProjectName.value.trim();
+    if (!name) return;
+    notebook = await addProject(name);
+    await setProject(name);
+    els.newProjectName.value = "";
+    els.newProjectForm.hidden = true;
+    renderNotebook();
+  });
+  // Deleting a project takes two clicks within a few seconds.
+  let deleteArmed = null;
+  els.deleteProject.addEventListener("click", async () => {
+    const project = currentProject;
+    if (deleteArmed !== project) {
+      deleteArmed = project;
+      const count = notebook.entries.filter((e) => e.project === project).length;
+      els.deleteProject.textContent = `Delete “${project}” and ${count} saved? Click again`;
+      setTimeout(() => {
+        if (deleteArmed === project) {
+          deleteArmed = null;
+          els.deleteProject.textContent = "Delete";
+        }
+      }, 5000);
+      return;
+    }
+    deleteArmed = null;
+    els.deleteProject.textContent = "Delete";
+    notebook = await removeProject(project);
+    await setProject(notebook.projects[0] ?? DEFAULT_PROJECT);
+    renderNotebook();
+  });
+  els.notebookList.addEventListener("click", async (event) => {
+    const id = event.target.closest("button[data-remove]")?.dataset.remove;
+    if (!id) return;
+    notebook = await removeEntry(id);
+    renderNotebook();
+  });
+  els.synthesize.addEventListener("click", () => (synthesisStream ? synthesisStream.abort() : synthesize()));
+  els.notebookCopy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(await notebookMarkdown());
+      flash(els.notebookCopy, "Copied", "Copy as Markdown");
+    } catch {
+      flash(els.notebookCopy, "Copy failed", "Copy as Markdown");
+    }
+  });
+  els.notebookDownload.addEventListener("click", async () => {
+    downloadText(`${currentProject} - notebook.md`, await notebookMarkdown(), "text/markdown");
+  });
+}
+
+async function loadNotebookView() {
+  notebook = await loadNotebook();
+  currentProject = settings.notebookProject || DEFAULT_PROJECT;
+  if (!notebook.projects.includes(currentProject)) currentProject = notebook.projects[0] ?? DEFAULT_PROJECT;
+  renderNotebook();
+}
+
+async function renderNotebook() {
+  const project = currentProject;
+  els.project.replaceChildren(...notebook.projects.map((p) => new Option(p, p)));
+  els.project.value = project;
+  const entries = notebook.entries.filter((e) => e.project === project);
+  els.notebookEmpty.hidden = entries.length > 0;
+  els.notebookList.replaceChildren(
+    ...entries.map((e) => {
+      const li = document.createElement("li");
+      const link = document.createElement("a");
+      link.textContent = e.title || e.url;
+      link.title = e.url;
+      if (/^https?:/.test(e.url)) {
+        link.href = e.url;
+        link.target = "_blank";
+        link.rel = "noopener";
+      }
+      const meta = document.createElement("div");
+      meta.className = "entry-meta";
+      const bits = [];
+      if (e.authors?.length) bits.push(e.authors.slice(0, 2).join(", "));
+      if (e.published) bits.push(String(e.published).slice(0, 10));
+      bits.push(hostOf(e.url));
+      bits.push(`saved ${new Date(e.savedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`);
+      meta.textContent = bits.join(" · ");
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.dataset.remove = e.id;
+      remove.textContent = "Remove";
+      meta.append(remove);
+      li.append(link, meta);
+      return li;
+    }),
+  );
+  els.synthesize.disabled = entries.length < 2 && !synthesisStream;
+  els.synthesize.title = entries.length < 2 ? "Save at least two summaries first" : "";
+  els.notebookNotice.hidden = true;
+  const saved = await loadSynthesis(project);
+  showSynthesis(saved, entries);
+}
+
+function showSynthesis(synthesis, entries) {
+  if (!synthesis?.text) {
+    els.synthesis.innerHTML = "";
+    els.synthesisSources.hidden = true;
+    els.synthesisMeta.hidden = true;
+    return;
+  }
+  els.synthesis.innerHTML = renderMarkdown(synthesis.text);
+  renderSources(synthesis.sources ?? entries);
+  const parts = [MODELS[synthesis.model]?.shortLabel ?? synthesis.model];
+  if (synthesis.cost != null) parts.push(formatCost(synthesis.cost));
+  parts.push(`written ${new Date(synthesis.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })} from ${synthesis.sources?.length ?? entries.length} sources`);
+  if (synthesis.sources && synthesis.sources.length !== entries.length) parts.push("the project has changed since; write it again to update");
+  els.synthesisMeta.textContent = parts.join(" · ");
+  els.synthesisMeta.hidden = false;
+}
+
+function renderSources(entries) {
+  els.synthesisSources.replaceChildren(
+    ...entries.map((e) => {
+      const li = document.createElement("li");
+      const link = document.createElement("a");
+      link.textContent = e.title || e.url;
+      if (/^https?:/.test(e.url)) {
+        link.href = e.url;
+        link.target = "_blank";
+        link.rel = "noopener";
+      }
+      li.append(link);
+      const extra = [e.authors?.length ? e.authors.join(", ") : null, e.published ? String(e.published).slice(0, 10) : null, e.siteName].filter(Boolean);
+      if (extra.length) li.append(` — ${extra.join(", ")}`);
+      return li;
+    }),
+  );
+  els.synthesisSources.hidden = entries.length === 0;
+}
+
+async function synthesize() {
+  const project = currentProject;
+  const entries = notebook.entries.filter((e) => e.project === project);
+  if (entries.length < 2) return;
+  if (!settings.apiKey) return showPanelNotice(els.notebookNotice, els.notebookNoticeText, "Add your Anthropic API key in Settings first.");
+  els.notebookNotice.hidden = true;
+  els.synthesis.innerHTML = "";
+  els.synthesisSources.hidden = true;
+  els.synthesisMeta.hidden = true;
+  els.notebookStatusText.textContent = `Writing a synthesis of ${entries.length} sources with ${MODELS[settings.model].shortLabel}…`;
+  els.notebookStatus.hidden = false;
+  els.synthesize.textContent = "Stop";
+  const stream = streamSynthesis(createClient(settings.apiKey), {
+    model: settings.model,
+    project,
+    focus: settings.focus,
+    entries,
+  });
+  synthesisStream = stream;
+  let text = "";
+  stream.on("text", (delta) => {
+    text += delta;
+    els.notebookStatus.hidden = true;
+    els.synthesis.innerHTML = renderMarkdown(text);
+  });
+  try {
+    const message = await stream.finalMessage();
+    els.notebookStatus.hidden = true;
+    if (message.stop_reason === "refusal") {
+      return showPanelNotice(els.notebookNotice, els.notebookNoticeText, "Claude declined to write this synthesis.");
+    }
+    const finalText = message.content.filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+    const synthesis = {
+      text: finalText,
+      model: message.model,
+      cost: estimateCost(message),
+      createdAt: Date.now(),
+      sources: entries.map(({ title, url, authors, published, siteName }) => ({ title, url, authors, published, siteName })),
+    };
+    await saveSynthesis(project, synthesis);
+    showSynthesis(synthesis, entries);
+  } catch (err) {
+    els.notebookStatus.hidden = true;
+    if (!(err instanceof Anthropic.APIUserAbortError)) {
+      showPanelNotice(els.notebookNotice, els.notebookNoticeText, describeError(err));
+    }
+  } finally {
+    if (synthesisStream === stream) synthesisStream = null;
+    els.synthesize.textContent = "Write a synthesis";
+    els.synthesize.disabled = entries.length < 2;
+  }
+}
+
+async function notebookMarkdown() {
+  const project = currentProject;
+  const entries = notebook.entries.filter((e) => e.project === project);
+  return toMarkdown(project, entries, await loadSynthesis(project));
+}
+
+// ---------------------------------------------------------------- tabs
+
+let tabsStream = null;
+let tabsRead = null; // tabs read for a pending digest, awaiting confirmation
+
+function initTabsView() {
+  els.tabsList.addEventListener("change", updateCompareButton);
+  els.digest.addEventListener("click", () => (tabsStream ? tabsStream.abort() : prepareDigest()));
+  els.tabsRun.addEventListener("click", runDigest);
+  els.tabsCancel.addEventListener("click", () => {
+    tabsRead = null;
+    els.tabsConfirm.hidden = true;
+  });
+  els.compare.addEventListener("click", () => (tabsStream ? tabsStream.abort() : compareTabs()));
+  els.tabsResult.addEventListener("click", (event) => {
+    const tabId = Number(event.target.closest("button.tabref")?.dataset.tabId);
+    if (tabId) chrome.tabs.update(tabId, { active: true }).catch(() => {});
+  });
+}
+
+async function loadTabsView() {
+  const tabs = await listTabs(windowId);
+  const checked = new Set([...els.tabsList.querySelectorAll("input:checked")].map((i) => Number(i.value)));
+  els.tabsList.replaceChildren(
+    ...tabs.map((t) => {
+      const label = document.createElement("label");
+      if (t.active) label.className = "active";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.value = String(t.tabId);
+      box.checked = checked.has(t.tabId);
+      const icon = document.createElement("img");
+      icon.alt = "";
+      if (t.favIconUrl && /^(https?|data):/.test(t.favIconUrl)) icon.src = t.favIconUrl;
+      else icon.hidden = true;
+      const title = document.createElement("span");
+      title.textContent = t.title;
+      title.title = t.url;
+      label.append(box, icon, title);
+      return label;
+    }),
+  );
+  els.digest.textContent = tabsStream ? "Stop" : `Digest all ${tabs.length} tabs`;
+  els.digest.disabled = tabs.length < 2 && !tabsStream;
+  updateCompareButton();
+  const saved = await chrome.storage.session.get(`digest|${windowId}`);
+  const result = saved[`digest|${windowId}`];
+  if (result && !tabsStream && !els.tabsResult.textContent) showTabsResult(result);
+}
+
+function selectedTabs() {
+  const ids = new Set([...els.tabsList.querySelectorAll("input:checked")].map((i) => Number(i.value)));
+  return ids;
+}
+
+function updateCompareButton() {
+  const n = selectedTabs().size;
+  els.compare.textContent = tabsStream ? "Stop" : n ? `Compare selected (${n})` : "Compare selected";
+  els.compare.disabled = !tabsStream && (n < 2 || n > 3);
+  els.compare.title = n > 3 ? "Pick at most three tabs" : n < 2 ? "Tick two or three tabs to compare" : "";
+}
+
+async function prepareDigest() {
+  if (!settings.apiKey) return showPanelNotice(els.tabsNotice, els.tabsNoticeText, "Add your Anthropic API key in Settings first.");
+  els.tabsNotice.hidden = true;
+  els.tabsConfirm.hidden = true;
+  const tabs = await listTabs(windowId);
+  els.tabsStatusText.textContent = `Reading ${tabs.length} tabs…`;
+  els.tabsStatus.hidden = false;
+  els.digest.disabled = true;
+  const read = await readTabs(tabs, DIGEST_CHARS, (done, total) => {
+    els.tabsStatusText.textContent = `Reading tabs… ${done} of ${total}`;
+  });
+  els.tabsStatus.hidden = true;
+  els.digest.disabled = false;
+  const usable = read.filter((t) => !t.error);
+  if (usable.length < 2) {
+    return showPanelNotice(els.tabsNotice, els.tabsNoticeText, "Fewer than two tabs could be read. Chrome pages, PDFs and tabs that haven't loaded yet can't be included.");
+  }
+  tabsRead = usable;
+  const price = MODELS[settings.model].price;
+  const tokens = estimateTokens(usable.map((t) => t.text));
+  const cost = (tokens * price.input + 1500 * price.output) / 1_000_000;
+  const skipped = read.length - usable.length;
+  els.tabsEstimate.textContent =
+    `${usable.length} tabs, about ${usable.reduce((n, t) => n + Math.min(t.words, DIGEST_CHARS / 6), 0).toLocaleString()} words to send` +
+    `${skipped ? ` (${skipped} skipped: ${read.filter((t) => t.error).map((t) => t.error).filter((v, i, a) => a.indexOf(v) === i).join("; ")})` : ""}. ` +
+    `Estimated cost with ${MODELS[settings.model].shortLabel}: ${formatCost(cost)}.`;
+  els.tabsConfirm.hidden = false;
+}
+
+async function runDigest() {
+  const tabs = tabsRead;
+  tabsRead = null;
+  els.tabsConfirm.hidden = true;
+  if (!tabs) return;
+  await runTabsStream(
+    () => streamDigest(createClient(settings.apiKey), { model: settings.model, tabs }),
+    tabs,
+    `Digesting ${tabs.length} tabs with ${MODELS[settings.model].shortLabel}…`,
+    "digest",
+  );
+}
+
+async function compareTabs() {
+  if (!settings.apiKey) return showPanelNotice(els.tabsNotice, els.tabsNoticeText, "Add your Anthropic API key in Settings first.");
+  const ids = selectedTabs();
+  const tabs = (await listTabs(windowId)).filter((t) => ids.has(t.tabId));
+  if (tabs.length < 2 || tabs.length > 3) return;
+  els.tabsNotice.hidden = true;
+  els.tabsStatusText.textContent = `Reading ${tabs.length} tabs…`;
+  els.tabsStatus.hidden = false;
+  const read = await readTabs(tabs, COMPARE_CHARS);
+  const failed = read.filter((t) => t.error);
+  if (failed.length) {
+    els.tabsStatus.hidden = true;
+    return showPanelNotice(els.tabsNotice, els.tabsNoticeText, `Couldn't read ${failed.map((t) => `“${t.title}”`).join(" and ")}: ${failed[0].error}.`);
+  }
+  await runTabsStream(
+    () => streamCompare(createClient(settings.apiKey), { model: settings.model, focus: settings.focus, tabs: read }),
+    read,
+    `Comparing ${read.length} tabs with ${MODELS[settings.model].shortLabel}…`,
+    "compare",
+  );
+}
+
+async function runTabsStream(start, tabs, statusText, kind) {
+  els.tabsResult.innerHTML = "";
+  els.tabsMeta.hidden = true;
+  els.tabsStatusText.textContent = statusText;
+  els.tabsStatus.hidden = false;
+  const stream = start();
+  tabsStream = stream;
+  els.digest.textContent = "Stop";
+  els.compare.textContent = "Stop";
+  els.compare.disabled = false;
+  let text = "";
+  stream.on("text", (delta) => {
+    text += delta;
+    els.tabsStatus.hidden = true;
+    els.tabsResult.innerHTML = renderMarkdown(text);
+    linkTabRefs(els.tabsResult, tabs);
+  });
+  try {
+    const message = await stream.finalMessage();
+    els.tabsStatus.hidden = true;
+    if (message.stop_reason === "refusal") {
+      return showPanelNotice(els.tabsNotice, els.tabsNoticeText, "Claude declined to do that.");
+    }
+    const result = {
+      kind,
+      text: message.content.filter((b) => b.type === "text").map((b) => b.text).join("").trim(),
+      model: message.model,
+      cost: estimateCost(message),
+      createdAt: Date.now(),
+      tabs: tabs.map(({ tabId, title, url }) => ({ tabId, title, url })),
+    };
+    showTabsResult(result);
+    if (kind === "digest") await chrome.storage.session.set({ [`digest|${windowId}`]: result });
+  } catch (err) {
+    els.tabsStatus.hidden = true;
+    if (!(err instanceof Anthropic.APIUserAbortError)) {
+      showPanelNotice(els.tabsNotice, els.tabsNoticeText, describeError(err));
+    }
+  } finally {
+    if (tabsStream === stream) tabsStream = null;
+    loadTabsView();
+  }
+}
+
+function showTabsResult(result) {
+  els.tabsResult.innerHTML = renderMarkdown(result.text);
+  linkTabRefs(els.tabsResult, result.tabs);
+  const parts = [
+    result.kind === "digest" ? `Digest of ${result.tabs.length} tabs` : `Comparison of ${result.tabs.length} tabs`,
+    MODELS[result.model]?.shortLabel ?? result.model,
+  ];
+  if (result.cost != null) parts.push(formatCost(result.cost));
+  parts.push(new Date(result.createdAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }));
+  els.tabsMeta.textContent = parts.join(" · ");
+  els.tabsMeta.hidden = false;
+}
+
+// Turns "[3]" in the rendered text into a button that switches to tab 3.
+function linkTabRefs(root, tabs) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) if (/\[\d+\]/.test(walker.currentNode.nodeValue)) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    for (const match of node.nodeValue.matchAll(/\[(\d+)\]/g)) {
+      const tab = tabs[Number(match[1]) - 1];
+      frag.append(node.nodeValue.slice(last, match.index));
+      if (tab) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "tabref";
+        button.dataset.tabId = String(tab.tabId);
+        button.title = tab.title;
+        button.textContent = match[1];
+        frag.append(button);
+      } else frag.append(match[0]);
+      last = match.index + match[0].length;
+    }
+    frag.append(node.nodeValue.slice(last));
+    node.replaceWith(frag);
+  }
+}
+
+// ---------------------------------------------------------------- helpers
+
+function showPanelNotice(box, textEl, text) {
+  textEl.textContent = text;
+  box.hidden = false;
+}
+
+function hostOf(url) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
+}
+
+function flash(button, label, back) {
+  button.textContent = label;
+  setTimeout(() => (button.textContent = back), 1500);
+}
+
+function downloadText(name, text, type) {
+  const blob = new Blob([text], { type });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = name.replace(/[\\/:*?"<>|]+/g, " ");
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 10_000);
 }

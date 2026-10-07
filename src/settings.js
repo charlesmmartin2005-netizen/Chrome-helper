@@ -51,6 +51,10 @@ export const DEFAULT_SETTINGS = {
   // What the reader is working on, e.g. "a paper on eminent domain".
   // Summaries lead with what's relevant to it.
   focus: "",
+  // Remember summarized pages locally, to spot repeats and reuse summaries.
+  keepHistory: true,
+  // The notebook project "Save to notebook" adds to.
+  notebookProject: "General",
   autoSummarize: true,
   articlesOnly: true,
   excludedSites: [

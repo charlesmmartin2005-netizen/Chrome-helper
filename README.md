@@ -16,6 +16,9 @@ Click the toolbar icon to open a side panel. While the panel is open, it follows
 - **Critical reading**: **Check the claims** lists the page's main factual claims and marks each as sourced, unsourced, or opinion presented as fact. **Bias & framing** points out loaded language, missing perspectives and headlines the body doesn't support. **Steelman the other side** gives the strongest counterargument.
 - **Highlight to explain**: select text on any page, right-click, and choose **Page Summarizer › Explain this / Define the terms / Why does this matter?**. The explanation appears in the side panel, in the page's conversation.
 - **Listen**: reads the summary aloud using Chrome's built-in voices, at no API cost.
+- **Tabs view**: **Digest all tabs** summarizes every tab open in the window and groups them by topic, with a button next to each entry that jumps to that tab. It reads the tabs first and shows the word count and estimated cost before anything is sent. Tick two or three tabs and **Compare selected** gives where they agree, where they disagree, what each leaves out, and a bottom line.
+- **Notebook view**: **Save to notebook** under a summary keeps the summary with its source (title, author, date, link) in a project. **Write a synthesis** turns everything saved in a project into one write-up with numbered citations and a sources list, and you can copy or download the whole notebook as Markdown.
+- **Have I seen this before?**: a local reading history (on by default, in Settings) fingerprints each page you summarize. When a new page mostly repeats one you've read, the panel says so and offers **What's new here?**. After restarting Chrome, pages in the history get their old summary back at no cost. Nothing in the history leaves your computer.
 - **Ask questions**: after a summary appears, ask follow-up questions about the page or PDF in the box below it. You can also use the **Explain it simply**, **Key terms** and **Quiz me** buttons. Claude answers from the page and says when something isn't on it. The conversation is saved with the summary, so it's still there when you switch tabs and come back.
 - **Saved summaries**: going back to a page you've already summarized shows the saved summary right away, with no new request. Saved summaries are cleared when you close the browser.
 - **Excluded sites**: email and messaging sites are excluded from automatic summaries by default. You can edit the list.
@@ -44,6 +47,8 @@ Requires Chrome 120 or newer.
 | **Regenerate** | Writes a fresh summary of the current page |
 | **Copy** | Copies the summary as Markdown |
 | **Listen** | Reads the summary aloud; press again to stop |
+| **Save to notebook** | Saves the summary and its source to the current notebook project |
+| **Page / Tabs / Notebook** (top of the panel) | Switch between the current page, the tab digest and comparison, and the notebook |
 | **Written for** | Rewrites the summary for a general reader, a beginner, an expert or a skeptic |
 | Tool buttons (Explain / Study / Check) | Run one of the tools above in the page's conversation; each answer has its own Copy link |
 | **Ask** box (below the summary) | Asks Claude a question about the page; press Enter to send and Shift+Enter for a new line. While Claude is answering, the button becomes **Stop** |
@@ -55,6 +60,7 @@ In **Settings** you can choose:
 
 - **Model**: Claude Opus 5.5 (default, best quality), Claude Sonnet 5.5 (faster, about half the cost) or Claude Haiku 4.5 (fastest and cheapest).
 - **Length**: Brief, Standard or Detailed.
+- **Reading history**: whether to remember summarized pages locally, with a Clear history button.
 - **What I'm working on**: an optional one-line description of your current project or class. Summaries and answers put the relevant parts first.
 - **Automatic summaries**: whether to summarize automatically, whether to do so only on article-like pages, and which sites never to summarize automatically.
 
@@ -82,9 +88,12 @@ Automatic summaries only run while the side panel is open. They only cover artic
 - `src/sidepanel.js`: tracks the active tab, decides whether to summarize, extracts the page, streams the summary and caches it in `chrome.storage.session`.
 - `src/content.js`: injected into the page on demand. It runs Readability and returns the article text with headings and lists preserved, plus bibliographic metadata (authors, dates, publisher, DOI) from meta tags and JSON-LD for citations.
 - `src/find-pdfs.js`: finds PDFs shown inside a page, including inside iframes, PDF.js viewers and shadow DOM. It also downloads them; if the site only gives the file to its own pages, it retries the download from inside the page. It also contains the page inspector behind **Copy debug info**.
+- `src/history.js`: the local reading history. Each page gets a min-hash fingerprint of its text; a new page is compared against the history locally, so repeats are spotted without any API call.
+- `src/notebook.js`: notebook storage (projects, saved summaries, the latest synthesis per project) and its Markdown export.
+- `src/tabs.js`: reads the text of other open tabs for the digest and comparisons, a few at a time, and estimates the tokens a digest will send.
 - `src/documents.js`: identifies a downloaded file. PDFs go to Claude as-is; Word and PowerPoint files are unzipped with [fflate](https://github.com/101arrowz/fflate) and their text is extracted, keeping headings, lists, table rows and slide order.
 - Brightspace/D2L topic pages (`/d2l/le/content/{course}/viewContent/{topic}/View` and `/d2l/le/lessons/{course}/topics/{topic}`) are handled in `src/sidepanel.js`. It fetches the topic's file from the Download button's address and falls back to Brightspace's `/d2l/api/le/{version}/{course}/content/topics/{topic}/file` API.
-- `src/summarize.js`: holds the prompts for summaries, styles, the study and credibility tools, and highlighted passages, and calls the Claude API for summaries and follow-up answers with the official [Anthropic TypeScript/JavaScript SDK](https://github.com/anthropics/anthropic-sdk-typescript), streaming the response. Summaries use low effort, because they don't need deep reasoning; answers to questions use medium effort. Questions use prompt caching, so the page is billed at full price only once per conversation. On Opus and Sonnet it also turns on server-side refusal fallbacks (`fallbacks: "default"`): if the model's safety filter declines a page, the API retries on Anthropic's recommended fallback model.
+- `src/summarize.js`: holds the prompts for summaries, styles, the study and credibility tools, highlighted passages, the tab digest, comparisons and notebook syntheses, and calls the Claude API for summaries and follow-up answers with the official [Anthropic TypeScript/JavaScript SDK](https://github.com/anthropics/anthropic-sdk-typescript), streaming the response. Summaries use low effort, because they don't need deep reasoning; answers to questions use medium effort. Questions use prompt caching, so the page is billed at full price only once per conversation. On Opus and Sonnet it also turns on server-side refusal fallbacks (`fallbacks: "default"`): if the model's safety filter declines a page, the API retries on Anthropic's recommended fallback model.
 - `src/markdown.js`: a small Markdown renderer that escapes all HTML, so a summary can't inject markup into the panel.
 - `src/settings.js` and `src/options.js`: settings storage and the settings page.
 

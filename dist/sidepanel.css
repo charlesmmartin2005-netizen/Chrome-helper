@@ -391,3 +391,169 @@ button.link {
   font-size: inherit;
   text-decoration: underline;
 }
+
+.views {
+  display: flex;
+  gap: 2px;
+  padding: 8px 16px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.views button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--muted);
+  padding: 6px 10px;
+  margin-bottom: -1px;
+}
+
+.views button.current {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+.lead {
+  color: var(--muted);
+  margin: 0 0 12px;
+}
+
+.seen {
+  margin-top: 10px;
+}
+
+.seen button {
+  margin-top: 8px;
+}
+
+.tabs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+  max-height: 40vh;
+  overflow: auto;
+}
+
+.tabs-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.tabs-list label img {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.tabs-list label span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tabs-list label.active span {
+  font-weight: 600;
+}
+
+.tabs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+#tabs-confirm button,
+.notice button + button {
+  margin-left: 6px;
+}
+
+button.tabref {
+  padding: 0 6px;
+  font-size: 12px;
+  border-radius: 999px;
+  vertical-align: 1px;
+}
+
+.project-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.project-row select {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 6px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.row input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+}
+
+.notebook-list {
+  margin: 0 0 12px;
+  padding-left: 22px;
+}
+
+.notebook-list li {
+  margin-bottom: 8px;
+}
+
+.notebook-list a {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.notebook-list a:hover {
+  text-decoration: underline;
+}
+
+.notebook-list .entry-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.notebook-list .entry-meta button {
+  margin-left: 6px;
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+.sources {
+  margin: 12px 0 0;
+  padding-left: 22px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.sources a {
+  color: var(--accent);
+}

@@ -1,5 +1,6 @@
 import { loadSettings, saveSettings, MODELS, LENGTHS } from "./settings.js";
 import { createClient, describeError } from "./summarize.js";
+import { loadHistory, clearHistory } from "./history.js";
 
 const $ = (id) => document.getElementById(id);
 const form = $("form");
@@ -29,8 +30,20 @@ async function init() {
   $("autoSummarize").checked = settings.autoSummarize;
   $("articlesOnly").checked = settings.articlesOnly;
   $("excludedSites").value = settings.excludedSites;
+  $("keepHistory").checked = settings.keepHistory;
   if (!settings.apiKey) $("apiKey").focus();
+  showHistoryCount();
 }
+
+async function showHistoryCount() {
+  const n = (await loadHistory()).length;
+  $("historyCount").textContent = n ? `${n} page${n === 1 ? "" : "s"} remembered` : "Nothing remembered yet";
+}
+
+$("clearHistory").addEventListener("click", async () => {
+  await clearHistory();
+  showHistoryCount();
+});
 
 $("toggleKey").addEventListener("click", () => {
   const input = $("apiKey");
@@ -51,6 +64,7 @@ form.addEventListener("submit", async (event) => {
     autoSummarize: $("autoSummarize").checked,
     articlesOnly: $("articlesOnly").checked,
     excludedSites: $("excludedSites").value.trim(),
+    keepHistory: $("keepHistory").checked,
   });
 
   if (!apiKey) {

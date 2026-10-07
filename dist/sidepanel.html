@@ -8,6 +8,13 @@
     <link rel="stylesheet" href="sidepanel.css" />
   </head>
   <body>
+    <nav id="views" class="views" aria-label="Panel sections">
+      <button type="button" data-view="page" class="current">Page</button>
+      <button type="button" data-view="tabs">Tabs</button>
+      <button type="button" data-view="notebook">Notebook</button>
+    </nav>
+
+    <section id="page-view" class="view">
     <header class="page">
       <img id="favicon" alt="" width="16" height="16" hidden />
       <div class="page-text">
@@ -36,6 +43,8 @@
     <div class="style-row">
       <label for="style">Written for</label>
       <select id="style" aria-label="Who the summary is written for"></select>
+      <span class="spacer"></span>
+      <button id="save" type="button" title="Save this summary and its source to the notebook" hidden>Save to notebook</button>
     </div>
 
     <main>
@@ -49,6 +58,10 @@
       </div>
       <article id="summary" class="summary" aria-live="polite"></article>
       <p id="meta" class="meta" hidden></p>
+      <div id="seen" class="notice seen" hidden>
+        <p id="seen-text"></p>
+        <button id="seen-action" type="button"></button>
+      </div>
 
       <section id="chat" class="chat" aria-label="Questions about this page" hidden>
         <div id="chat-log" class="chat-log" aria-live="polite"></div>
@@ -59,6 +72,60 @@
         </form>
       </section>
     </main>
+    </section>
+
+    <section id="tabs-view" class="view" hidden>
+      <main>
+        <p class="lead">Summarize everything you have open, or pick two or three tabs to compare.</p>
+        <div id="tabs-list" class="tabs-list"></div>
+        <div class="tabs-actions">
+          <button id="digest" class="primary" type="button">Digest all tabs</button>
+          <button id="compare" type="button" disabled>Compare selected</button>
+        </div>
+        <div id="tabs-confirm" class="notice" hidden>
+          <p id="tabs-estimate"></p>
+          <button id="tabs-run" class="primary" type="button">Run digest</button>
+          <button id="tabs-cancel" type="button">Cancel</button>
+        </div>
+        <div id="tabs-status" class="status" role="status" hidden>
+          <span class="spinner" aria-hidden="true"></span>
+          <span id="tabs-status-text"></span>
+        </div>
+        <div id="tabs-notice" class="notice" hidden><p id="tabs-notice-text"></p></div>
+        <article id="tabs-result" class="summary" aria-live="polite"></article>
+        <p id="tabs-meta" class="meta" hidden></p>
+      </main>
+    </section>
+
+    <section id="notebook-view" class="view" hidden>
+      <main>
+        <div class="project-row">
+          <label for="project">Project</label>
+          <select id="project"></select>
+          <button id="new-project" type="button" title="New project">+</button>
+          <button id="delete-project" type="button" title="Delete this project and everything saved in it">Delete</button>
+        </div>
+        <form id="new-project-form" class="row" hidden>
+          <input id="new-project-name" type="text" maxlength="80" placeholder="Project name, e.g. Eminent domain paper" />
+          <button class="primary" type="submit">Add</button>
+        </form>
+        <p id="notebook-empty" class="lead" hidden>Nothing saved here yet. On the Page view, click <b>Save to notebook</b> under a summary.</p>
+        <ol id="notebook-list" class="notebook-list"></ol>
+        <div class="tabs-actions">
+          <button id="synthesize" class="primary" type="button">Write a synthesis</button>
+          <button id="notebook-copy" type="button">Copy as Markdown</button>
+          <button id="notebook-download" type="button">Download</button>
+        </div>
+        <div id="notebook-status" class="status" role="status" hidden>
+          <span class="spinner" aria-hidden="true"></span>
+          <span id="notebook-status-text"></span>
+        </div>
+        <div id="notebook-notice" class="notice" hidden><p id="notebook-notice-text"></p></div>
+        <article id="synthesis" class="summary" aria-live="polite"></article>
+        <ol id="synthesis-sources" class="sources" hidden></ol>
+        <p id="synthesis-meta" class="meta" hidden></p>
+      </main>
+    </section>
 
     <footer>
       <p>Summaries are written by Claude and can contain mistakes.</p>

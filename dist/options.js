@@ -1192,6 +1192,10 @@
     // What the reader is working on, e.g. "a paper on eminent domain".
     // Summaries lead with what's relevant to it.
     focus: "",
+    // Remember summarized pages locally, to spot repeats and reuse summaries.
+    keepHistory: true,
+    // The notebook project "Save to notebook" adds to.
+    notebookProject: "General",
     autoSummarize: true,
     articlesOnly: true,
     excludedSites: [
@@ -17350,6 +17354,21 @@ Please migrate to a newer model. Visit https://docs.anthropic.com/en/docs/resour
     return err?.message ?? String(err);
   }
 
+  // src/history.js
+  var KEY = "history";
+  var HASHES = 64;
+  var PERMS = Array.from({ length: HASHES }, (_, i) => ({
+    a: 2654435761 + i * 40503 * 2 + 1 >>> 0,
+    b: i * 97 + 12345 >>> 0
+  }));
+  async function loadHistory() {
+    const { [KEY]: entries } = await chrome.storage.local.get(KEY);
+    return Array.isArray(entries) ? entries : [];
+  }
+  function clearHistory() {
+    return chrome.storage.local.remove(KEY);
+  }
+
   // src/options.js
   var $ = (id) => document.getElementById(id);
   var form = $("form");
@@ -17375,8 +17394,18 @@ Please migrate to a newer model. Visit https://docs.anthropic.com/en/docs/resour
     $("autoSummarize").checked = settings.autoSummarize;
     $("articlesOnly").checked = settings.articlesOnly;
     $("excludedSites").value = settings.excludedSites;
+    $("keepHistory").checked = settings.keepHistory;
     if (!settings.apiKey) $("apiKey").focus();
+    showHistoryCount();
   }
+  async function showHistoryCount() {
+    const n = (await loadHistory()).length;
+    $("historyCount").textContent = n ? `${n} page${n === 1 ? "" : "s"} remembered` : "Nothing remembered yet";
+  }
+  $("clearHistory").addEventListener("click", async () => {
+    await clearHistory();
+    showHistoryCount();
+  });
   $("toggleKey").addEventListener("click", () => {
     const input = $("apiKey");
     const show = input.type === "password";
@@ -17394,7 +17423,8 @@ Please migrate to a newer model. Visit https://docs.anthropic.com/en/docs/resour
       focus: $("focus").value.trim(),
       autoSummarize: $("autoSummarize").checked,
       articlesOnly: $("articlesOnly").checked,
-      excludedSites: $("excludedSites").value.trim()
+      excludedSites: $("excludedSites").value.trim(),
+      keepHistory: $("keepHistory").checked
     });
     if (!apiKey) {
       setStatus("Saved. Add an API key to start summarizing.", true);

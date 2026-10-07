@@ -59,6 +59,22 @@
           <p class="hint">One site per line. A site also covers its subdomains. You can still press Summarize on these sites.</p>
         </section>
 
+        <section>
+          <h2>Reading history</h2>
+          <label class="check">
+            <input id="keepHistory" type="checkbox" />
+            Remember the pages I summarize on this computer
+          </label>
+          <p class="hint">
+            Lets the panel tell you when a page mostly repeats something you've already read, and reuse a
+            summary when you come back to a page after restarting Chrome. Nothing is uploaded; the history stays in this browser profile.
+          </p>
+          <div class="row" style="margin-top: 10px; align-items: center">
+            <button id="clearHistory" type="button">Clear history</button>
+            <span id="historyCount" class="hint" style="margin: 0"></span>
+          </div>
+        </section>
+
         <div class="actions">
           <button class="primary" type="submit">Save</button>
           <span id="saveStatus" class="save-status" role="status"></span>
