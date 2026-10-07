@@ -25,6 +25,7 @@ async function init() {
   $("apiKey").value = settings.apiKey;
   $("model").value = settings.model;
   $("length").value = settings.length;
+  $("focus").value = settings.focus;
   $("autoSummarize").checked = settings.autoSummarize;
   $("articlesOnly").checked = settings.articlesOnly;
   $("excludedSites").value = settings.excludedSites;
@@ -46,6 +47,7 @@ form.addEventListener("submit", async (event) => {
     apiKey,
     model,
     length: $("length").value,
+    focus: $("focus").value.trim(),
     autoSummarize: $("autoSummarize").checked,
     articlesOnly: $("articlesOnly").checked,
     excludedSites: $("excludedSites").value.trim(),

@@ -2,7 +2,7 @@
 // finishes loading (or you switch tabs) it extracts the page text, asks Claude
 // for a summary and streams it in. Summaries are cached for the browser
 // session so switching back to a tab is instant and free.
-import { loadSettings, saveSettings, isExcluded, MODELS } from "./settings.js";
+import { loadSettings, saveSettings, isExcluded, MODELS, STYLES } from "./settings.js";
 import {
   Anthropic,
   createClient,
@@ -10,6 +10,8 @@ import {
   streamAnswer,
   estimateCost,
   describeError,
+  TOOLS,
+  selectionQuestion,
 } from "./summarize.js";
 import { renderMarkdown } from "./markdown.js";
 import { findEmbeddedPdfs, fetchFileInPage, describeFrame } from "./find-pdfs.js";
@@ -30,6 +32,8 @@ const els = {
   host: $("page-host"),
   primary: $("primary"),
   copy: $("copy"),
+  listen: $("listen"),
+  style: $("style"),
   debug: $("debug"),
   version: $("version"),
   auto: $("auto"),
@@ -43,7 +47,7 @@ const els = {
   meta: $("meta"),
   chat: $("chat"),
   chatLog: $("chat-log"),
-  suggestions: $("suggestions"),
+  tools: $("tools"),
   askForm: $("ask-form"),
   askInput: $("ask-input"),
   askSend: $("ask-send"),
@@ -91,6 +95,11 @@ async function init() {
 
   els.primary.addEventListener("click", onPrimaryClick);
   els.copy.addEventListener("click", copySummary);
+  els.listen.addEventListener("click", toggleListen);
+  for (const [value, label] of Object.entries(STYLES)) els.style.add(new Option(label, value));
+  els.style.value = settings.style;
+  els.style.addEventListener("change", () => saveSettings({ style: els.style.value }));
+  renderTools();
   els.debug.addEventListener("click", copyDebugInfo);
   els.version.textContent = `v${chrome.runtime.getManifest().version}`;
   els.askForm.addEventListener("submit", (event) => {
@@ -105,9 +114,12 @@ async function init() {
     }
   });
   els.askInput.addEventListener("input", sizeAskInput);
-  els.suggestions.addEventListener("click", (event) => {
-    const question = event.target.closest("button")?.dataset.question;
-    if (question && !asking) ask(question);
+  els.tools.addEventListener("click", (event) => {
+    const id = event.target.closest("button")?.dataset.tool;
+    if (id && !asking) runTool(id);
+  });
+  chrome.storage.session.onChanged.addListener((changes) => {
+    if (changes.pendingSelection?.newValue) handleSelection();
   });
   els.settings.addEventListener("click", () => chrome.runtime.openOptionsPage());
   els.auto.addEventListener("change", () =>
@@ -115,13 +127,17 @@ async function init() {
   );
 
   await refresh("auto");
+  handleSelection();
 }
 
 async function onStorageChanged(changes, area) {
   if (area !== "local") return;
   settings = await loadSettings();
   els.auto.checked = settings.autoSummarize;
-  const affectsSummary = changes.apiKey || changes.model || changes.length;
+  els.style.value = settings.style;
+  // Choosing a style in the panel is a request for that summary now.
+  if (changes.style) return refresh("manual");
+  const affectsSummary = changes.apiKey || changes.model || changes.length || changes.focus;
   const affectsGating =
     changes.autoSummarize || changes.articlesOnly || changes.excludedSites;
   if (affectsSummary || (affectsGating && shown.state !== "working" && shown.state !== "done")) {
@@ -258,6 +274,8 @@ async function summarize(page, key, myRun) {
   const stream = streamSummary(createClient(settings.apiKey), {
     model,
     length: settings.length,
+    style: settings.style,
+    focus: settings.focus,
     page,
   });
   activeStream = stream;
@@ -348,7 +366,10 @@ function stopAsking() {
 
 // ---------------------------------------------------------------- questions
 
-async function ask(rawQuestion) {
+// The question is what's sent to Claude; label (if given) is what the panel
+// shows for it, for tools and highlighted passages. structured asks for
+// flashcards as JSON.
+async function ask(rawQuestion, { label = null, structured = false } = {}) {
   const question = rawQuestion.trim();
   if (!question || !currentEntry || asking) return;
   const entry = currentEntry;
@@ -358,8 +379,7 @@ async function ask(rawQuestion) {
   asking = current;
   els.askInput.value = "";
   sizeAskInput();
-  els.suggestions.hidden = true;
-  const { answerEl, metaEl } = appendExchange(question);
+  const { answerEl, metaEl } = appendExchange({ q: question, label });
   setAsking(true);
 
   let finished = false;
@@ -376,27 +396,31 @@ async function ask(rawQuestion) {
     answerEl.innerHTML = '<span class="spinner"></span> Thinking…';
     const stream = streamAnswer(createClient(settings.apiKey), {
       model: settings.model,
+      focus: settings.focus,
       page: currentPage,
       summary: entry.text,
       history: entry.chat ?? [],
       question,
+      structured,
     });
     current.stream = stream;
 
     let text = "";
     let renderPending = false;
-    stream.on("text", (delta) => {
-      text += delta;
-      if (renderPending) return;
-      renderPending = true;
-      requestAnimationFrame(() => {
-        renderPending = false;
-        if (finished) return;
-        const follow = nearBottom();
-        answerEl.innerHTML = renderMarkdown(text);
-        if (follow) scrollToBottom();
+    if (!structured) {
+      stream.on("text", (delta) => {
+        text += delta;
+        if (renderPending) return;
+        renderPending = true;
+        requestAnimationFrame(() => {
+          renderPending = false;
+          if (finished) return;
+          const follow = nearBottom();
+          answerEl.innerHTML = renderMarkdown(text);
+          if (follow) scrollToBottom();
+        });
       });
-    });
+    }
 
     const message = await stream.finalMessage();
     finished = true;
@@ -411,9 +435,16 @@ async function ask(rawQuestion) {
       .map((block) => block.text)
       .join("")
       .trim();
-    answerEl.innerHTML = renderMarkdown(answer);
-    const turn = { q: question, a: answer, model: message.model, cost: estimateCost(message) };
+    const turn = { q: question, a: answer, label, model: message.model, cost: estimateCost(message) };
     if (message.stop_reason === "max_tokens") turn.cutOff = true;
+    if (structured) {
+      const cards = parseCards(answer);
+      if (!cards) throw new Error("The flashcards came back in an unexpected format. Try again.");
+      turn.cards = cards;
+      // Keep a readable copy so later questions can refer to the cards.
+      turn.a = cards.map((c) => `**Q:** ${c.front}\n**A:** ${c.back}`).join("\n\n");
+    }
+    renderAnswer(answerEl, turn);
     metaEl.textContent = turnMeta(turn);
     entry.chat = [...(entry.chat ?? []), turn];
     if (key) await putCached(key, entry);
@@ -428,34 +459,178 @@ async function ask(rawQuestion) {
     answerEl.textContent = describeError(err);
     answerEl.classList.add("error");
     hideStatus();
-    if (!els.askInput.value) els.askInput.value = question;
+    if (!label && !els.askInput.value) els.askInput.value = question;
   } finally {
     if (asking === current) asking = null;
     if (myRun === runId) setAsking(false);
   }
 }
 
-function appendExchange(question, answer) {
+function runTool(id) {
+  const tool = TOOLS[id];
+  if (!tool) return;
+  let prompt = tool.prompt;
+  if (id === "cite") {
+    const today = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+    prompt += `\n\nToday's date, for the access date, is ${today}.`;
+  }
+  ask(prompt, { label: tool.label, structured: Boolean(tool.structured) });
+}
+
+function parseCards(text) {
+  try {
+    const cards = JSON.parse(text)?.cards;
+    if (!Array.isArray(cards)) return null;
+    const clean = cards
+      .map((c) => ({ front: String(c?.front ?? "").trim(), back: String(c?.back ?? "").trim() }))
+      .filter((c) => c.front && c.back);
+    return clean.length ? clean : null;
+  } catch {
+    return null;
+  }
+}
+
+// Fills an answer element from a stored turn: flashcards as flip cards with
+// an export button, everything else as Markdown.
+function renderAnswer(answerEl, turn) {
+  answerEl.dataset.copyText = turn.a;
+  if (!turn.cards) {
+    answerEl.innerHTML = renderMarkdown(turn.a);
+    return;
+  }
+  answerEl.replaceChildren();
+  const list = document.createElement("div");
+  list.className = "cards";
+  turn.cards.forEach((card, i) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "card";
+    const show = (flipped) => {
+      button.classList.toggle("flipped", flipped);
+      button.replaceChildren();
+      const side = document.createElement("span");
+      side.className = "side-label";
+      side.textContent = `${i + 1} / ${turn.cards.length} · ${flipped ? "Answer" : "Question"} · click to flip`;
+      button.append(side, document.createTextNode(flipped ? card.back : card.front));
+    };
+    show(false);
+    button.addEventListener("click", () => show(!button.classList.contains("flipped")));
+    list.append(button);
+  });
+  const exportButton = document.createElement("button");
+  exportButton.type = "button";
+  exportButton.textContent = "Export for Anki";
+  exportButton.title = "Downloads a text file. In Anki: File › Import, then pick it.";
+  exportButton.addEventListener("click", () => exportCards(turn.cards));
+  answerEl.append(list, exportButton);
+}
+
+// Anki imports plain text with one card per line: front, a tab, back.
+function exportCards(cards) {
+  const clean = (text) => text.replace(/[\t\r\n]+/g, " ").trim();
+  const lines = ["#separator:tab", "#html:false", ...cards.map((c) => `${clean(c.front)}\t${clean(c.back)}`)];
+  const blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  const base = (currentPage?.fileName || els.title.textContent || "flashcards").replace(/[\\/:*?"<>|]+/g, " ").trim();
+  link.download = `${base.slice(0, 60)} - flashcards.txt`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 10_000);
+}
+
+// A selection sent from the right-click menu. It waits for a summary of the
+// page (summarizing first if there isn't one), then asks about the passage.
+let selectionBusy = false;
+async function handleSelection() {
+  if (selectionBusy) return;
+  selectionBusy = true;
+  try {
+    const { pendingSelection: sel } = await chrome.storage.session.get("pendingSelection");
+    if (!sel) return;
+    if (Date.now() - sel.at > 5 * 60_000) return chrome.storage.session.remove("pendingSelection");
+    const [tab] = await chrome.tabs.query({ active: true, windowId });
+    if (!tab || tab.id !== sel.tabId) return; // meant for a panel in another window
+    await chrome.storage.session.remove("pendingSelection");
+    // Wait for whatever the panel is doing with this page to finish.
+    for (let i = 0; i < 600 && (shown.state === "working" || shown.state === "waiting" || asking); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    if (!currentEntry) {
+      await refresh("manual");
+      for (let i = 0; i < 1200 && shown.state === "working"; i++) await new Promise((r) => setTimeout(r, 100));
+    }
+    if (!currentEntry) return; // the summary failed; its notice explains why
+    await ask(selectionQuestion(sel.mode, sel.text), {
+      label: `${{ explain: "Explain", define: "Define", matter: "Why it matters" }[sel.mode] ?? "Explain"}: “${sel.text.length > 120 ? sel.text.slice(0, 120).trim() + "…" : sel.text}”`,
+    });
+  } finally {
+    selectionBusy = false;
+  }
+}
+
+// Adds a question/answer pair to the log. With turn.a set it renders the
+// stored answer; otherwise the caller fills answerEl as the answer streams.
+function appendExchange(turn) {
   const questionEl = document.createElement("div");
   questionEl.className = "msg user";
-  questionEl.textContent = question;
+  questionEl.textContent = turn.label ?? turn.q;
   const answerEl = document.createElement("div");
   answerEl.className = "msg assistant";
-  if (answer != null) answerEl.innerHTML = renderMarkdown(answer);
+  if (turn.a != null) renderAnswer(answerEl, turn);
+  const actions = document.createElement("div");
+  actions.className = "msg-actions";
   const metaEl = document.createElement("div");
   metaEl.className = "msg-meta";
-  els.chatLog.append(questionEl, answerEl, metaEl);
+  const copyButton = document.createElement("button");
+  copyButton.type = "button";
+  copyButton.className = "link";
+  copyButton.textContent = "Copy";
+  copyButton.addEventListener("click", async () => {
+    const text = answerEl.dataset.copyText ?? answerEl.innerText;
+    try {
+      await navigator.clipboard.writeText(text);
+      copyButton.textContent = "Copied";
+    } catch {
+      copyButton.textContent = "Copy failed";
+    }
+    setTimeout(() => (copyButton.textContent = "Copy"), 1500);
+  });
+  actions.append(metaEl, copyButton);
+  els.chatLog.append(questionEl, answerEl, actions);
   scrollToBottom();
   return { answerEl, metaEl };
 }
 
 function renderChat(entry) {
   els.chatLog.replaceChildren();
-  const chat = entry.chat ?? [];
-  for (const turn of chat) appendExchange(turn.q, turn.a).metaEl.textContent = turnMeta(turn);
-  els.suggestions.hidden = chat.length > 0;
+  for (const turn of entry.chat ?? []) appendExchange(turn).metaEl.textContent = turnMeta(turn);
   els.chat.hidden = !entry.text;
   setAsking(false);
+}
+
+function renderTools() {
+  els.tools.replaceChildren();
+  const groups = new Map();
+  for (const [id, tool] of Object.entries(TOOLS)) {
+    if (!groups.has(tool.group)) groups.set(tool.group, []);
+    groups.get(tool.group).push([id, tool]);
+  }
+  for (const [group, tools] of groups) {
+    const row = document.createElement("div");
+    row.className = "tool-group";
+    const label = document.createElement("span");
+    label.className = "group-label";
+    label.textContent = group;
+    row.append(label);
+    for (const [id, tool] of tools) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.tool = id;
+      button.textContent = tool.label;
+      row.append(button);
+    }
+    els.tools.append(row);
+  }
 }
 
 function turnMeta(turn) {
@@ -471,7 +646,7 @@ function turnMeta(turn) {
 function setAsking(busy) {
   els.askSend.textContent = busy ? "Stop" : "Ask";
   els.askSend.classList.toggle("stop", busy);
-  for (const button of els.suggestions.querySelectorAll("button")) button.disabled = busy;
+  for (const button of els.tools.querySelectorAll("button")) button.disabled = busy;
 }
 
 function sizeAskInput() {
@@ -516,6 +691,7 @@ async function extractPage(tab, url) {
     siteName: result.siteName,
     readerable: result.readerable,
     text: result.text ?? "",
+    meta: result.meta ?? null,
     truncated: false,
   };
 
@@ -736,7 +912,10 @@ function normalizeUrl(rawUrl) {
 // ---------------------------------------------------------------- cache
 
 function cacheKey(url) {
-  return `${CACHE_PREFIX}${settings.model}|${settings.length}|${url}`;
+  // A short fingerprint of the focus text, so changing it gets fresh summaries.
+  let focusHash = 0;
+  for (const ch of settings.focus) focusHash = (focusHash * 31 + ch.charCodeAt(0)) >>> 0;
+  return `${CACHE_PREFIX}${settings.model}|${settings.length}|${settings.style}|${focusHash}|${url}`;
 }
 
 async function getCached(key) {
@@ -776,6 +955,7 @@ function showPageHeader(tab) {
 }
 
 function resetView() {
+  stopListening();
   currentEntry = null;
   currentKey = null;
   currentPage = null;
@@ -786,6 +966,7 @@ function resetView() {
   els.summary.innerHTML = "";
   els.meta.hidden = true;
   els.copy.hidden = true;
+  els.listen.hidden = true;
 }
 
 function setPrimary(kind, { disabled = false } = {}) {
@@ -821,6 +1002,7 @@ function showSummary(entry, { fromCache = false } = {}) {
   els.notice.hidden = true;
   els.summary.innerHTML = renderMarkdown(entry.text);
   els.copy.hidden = !entry.text;
+  els.listen.hidden = !entry.text || !chrome.tts;
   setPrimary("regenerate");
 
   const parts = [MODELS[entry.model]?.shortLabel ?? entry.model];
@@ -858,6 +1040,47 @@ async function copySummary() {
 function flashCopy(label) {
   els.copy.textContent = label;
   setTimeout(() => (els.copy.textContent = "Copy"), 1500);
+}
+
+// Reads the summary aloud with the browser's built-in speech (no API cost).
+let listening = false;
+function toggleListen() {
+  if (listening) return stopListening();
+  if (!currentEntry?.text) return;
+  const text = spokenText(currentEntry.text);
+  listening = true;
+  els.listen.textContent = "Stop";
+  chrome.tts.speak(text, {
+    rate: 1.05,
+    enqueue: false,
+    onEvent: (event) => {
+      if (["end", "interrupted", "cancelled", "error"].includes(event.eventType)) stopListening(false);
+      if (event.eventType === "error") showNotice(`Couldn't read the summary aloud: ${event.errorMessage ?? "no voice available"}.`);
+    },
+  });
+}
+
+function stopListening(stopSpeech = true) {
+  if (!listening) return;
+  listening = false;
+  els.listen.textContent = "Listen";
+  if (stopSpeech) chrome.tts.stop();
+}
+
+// Markdown stripped down to sentences a voice can read.
+function spokenText(markdown) {
+  return markdown
+    .replace(/\*\*Reading time:\*\*[^\n]*/g, "")
+    .replace(/^\s*#{1,6}\s*/gm, "")
+    .replace(/^\s*[-*•]\s+/gm, "")
+    .replace(/^\s*\d+[.)]\s+/gm, "")
+    .replace(/\*\*TL;DR:\*\*/g, "In short:")
+    .replace(/[*_`#>]/g, "")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/\n{2,}/g, ". ")
+    .replace(/\n/g, " ")
+    .replace(/\.\s*\./g, ".")
+    .trim();
 }
 
 // Copies a description of the current page's structure (frames, embedded

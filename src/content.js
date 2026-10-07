@@ -31,6 +31,63 @@ function tidy(text) {
     .trim();
 }
 
+// Bibliographic details for citations: <meta> tags (Open Graph, Highwire
+// "citation_*" tags used by journals, Dublin Core) and JSON-LD.
+function pageMeta() {
+  const meta = { authors: [], published: null, modified: null, siteName: null, publisher: null, doi: null, type: null, lang: document.documentElement.lang || null };
+  const content = (selector) => {
+    for (const el of document.querySelectorAll(selector)) {
+      const value = (el.getAttribute("content") ?? "").trim();
+      if (value) return value;
+    }
+    return null;
+  };
+  const addAuthor = (value) => {
+    const name = String(value ?? "").trim();
+    if (name && !/^https?:/.test(name) && name.length < 120 && !meta.authors.includes(name)) {
+      meta.authors.push(name);
+    }
+  };
+
+  for (const el of document.querySelectorAll('meta[name="citation_author"], meta[name="dc.creator" i], meta[name="author"], meta[property="article:author"], meta[name="parsely-author"]')) {
+    addAuthor(el.getAttribute("content"));
+  }
+  meta.published = content('meta[property="article:published_time"], meta[name="citation_publication_date"], meta[name="citation_date"], meta[name="citation_online_date"], meta[name="dc.date" i], meta[name="date"], meta[name="parsely-pub-date"], meta[itemprop="datePublished"]');
+  meta.modified = content('meta[property="article:modified_time"], meta[itemprop="dateModified"]');
+  meta.siteName = content('meta[property="og:site_name"], meta[name="application-name"]');
+  meta.publisher = content('meta[name="citation_publisher"], meta[name="citation_journal_title"], meta[name="dc.publisher" i]');
+  meta.doi = content('meta[name="citation_doi"], meta[name="dc.identifier" i][content^="10."]');
+  meta.type = content('meta[property="og:type"]');
+
+  for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+    let data;
+    try {
+      data = JSON.parse(script.textContent);
+    } catch {
+      continue;
+    }
+    const queue = [data];
+    while (queue.length) {
+      const node = queue.shift();
+      if (Array.isArray(node)) queue.push(...node);
+      if (!node || typeof node !== "object") continue;
+      if (node["@graph"]) queue.push(node["@graph"]);
+      const type = String(node["@type"] ?? "");
+      if (/Article|Report|Book|WebPage|BlogPosting|Thesis|Dataset/i.test(type)) {
+        for (const author of [].concat(node.author ?? [])) addAuthor(typeof author === "string" ? author : author?.name);
+        meta.published ??= node.datePublished ?? null;
+        meta.modified ??= node.dateModified ?? null;
+        meta.publisher ??= node.publisher?.name ?? null;
+      }
+    }
+  }
+  if (!meta.published) {
+    const time = document.querySelector("article time[datetime], time[datetime][pubdate], time[datetime]");
+    if (time) meta.published = time.getAttribute("datetime");
+  }
+  return meta;
+}
+
 globalThis.__pageSummarizerExtract = function extract() {
   const result = {
     title: document.title,
@@ -40,8 +97,14 @@ globalThis.__pageSummarizerExtract = function extract() {
     readerable: false,
     source: "page",
     text: "",
+    meta: null,
   };
   if (document.contentType === "application/pdf" || !document.body) return result;
+  try {
+    result.meta = pageMeta();
+  } catch {
+    // Citations will work from the byline and URL alone.
+  }
 
   try {
     result.readerable = isProbablyReaderable(document);

@@ -259,17 +259,89 @@ main {
   font-size: 11px;
 }
 
-.suggestions {
+.style-row {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 10px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
 }
 
-.suggestions button {
+.style-row select {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 3px 6px;
+}
+
+.tools {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0 10px;
+}
+
+.tool-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.tool-group .group-label {
+  color: var(--muted);
+  font-size: 11px;
+  width: 48px;
+  flex: none;
+}
+
+.tools button {
   font-size: 12px;
   padding: 4px 10px;
   border-radius: 999px;
+}
+
+.msg-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.msg-actions .msg-meta {
+  flex: 1;
+}
+
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.card {
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  white-space: normal;
+}
+
+.card .side-label {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+
+.card.flipped {
+  border-color: var(--accent);
 }
 
 .ask {

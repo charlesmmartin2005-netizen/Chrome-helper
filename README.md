@@ -10,6 +10,12 @@ Click the toolbar icon to open a side panel. While the panel is open, it follows
 - **Article detection**: by default it only summarizes automatically when the page looks like an article. On other pages (apps, dashboards, search results), press **Summarize** to get a summary anyway.
 - **Clean text extraction**: uses Mozilla's Readability (the engine behind Firefox Reader View) to remove navigation, ads and footers before anything is sent.
 - **PDFs, Word and PowerPoint files**: PDFs are sent to Claude as documents. This works when a PDF is open in its own tab and when a site shows it inside a page. On Brightspace/D2L course pages, the extension downloads the course file directly, the same way the page's Download button does, so it also works when Brightspace's preview fails. It can read PDFs, Word (.docx) and PowerPoint (.pptx) files. For older .doc/.ppt files and spreadsheets, it tells you it can't read them instead of summarizing the page around them.
+- **Written for you**: a "Written for" switch at the top of the panel rewrites the summary for a general reader, someone new to the topic, an expert, or a skeptic. In Settings you can also say what you're working on (for example "a paper on eminent domain"); summaries and answers then lead with the parts relevant to it.
+- **Reading time**: each summary ends with the page's reading time and an estimate of how much of it is new information rather than introduction, repetition and filler.
+- **Study tools**: under every summary, one click makes **Flashcards** (with an **Export for Anki** button), a **Quiz**, **Key terms**, a plain-language explanation, or a **Cite** entry in MLA, APA and Chicago built from the page's metadata.
+- **Critical reading**: **Check the claims** lists the page's main factual claims and marks each as sourced, unsourced, or opinion presented as fact. **Bias & framing** points out loaded language, missing perspectives and headlines the body doesn't support. **Steelman the other side** gives the strongest counterargument.
+- **Highlight to explain**: select text on any page, right-click, and choose **Page Summarizer › Explain this / Define the terms / Why does this matter?**. The explanation appears in the side panel, in the page's conversation.
+- **Listen**: reads the summary aloud using Chrome's built-in voices, at no API cost.
 - **Ask questions**: after a summary appears, ask follow-up questions about the page or PDF in the box below it. You can also use the **Explain it simply**, **Key terms** and **Quiz me** buttons. Claude answers from the page and says when something isn't on it. The conversation is saved with the summary, so it's still there when you switch tabs and come back.
 - **Saved summaries**: going back to a page you've already summarized shows the saved summary right away, with no new request. Saved summaries are cleared when you close the browser.
 - **Excluded sites**: email and messaging sites are excluded from automatic summaries by default. You can edit the list.
@@ -37,6 +43,9 @@ Requires Chrome 120 or newer.
 | **Stop** | Cancels the summary in progress |
 | **Regenerate** | Writes a fresh summary of the current page |
 | **Copy** | Copies the summary as Markdown |
+| **Listen** | Reads the summary aloud; press again to stop |
+| **Written for** | Rewrites the summary for a general reader, a beginner, an expert or a skeptic |
+| Tool buttons (Explain / Study / Check) | Run one of the tools above in the page's conversation; each answer has its own Copy link |
 | **Ask** box (below the summary) | Asks Claude a question about the page; press Enter to send and Shift+Enter for a new line. While Claude is answering, the button becomes **Stop** |
 | **Auto** switch | Turns automatic summaries on or off |
 | ⚙ | Opens the settings |
@@ -46,7 +55,10 @@ In **Settings** you can choose:
 
 - **Model**: Claude Opus 5.5 (default, best quality), Claude Sonnet 5.5 (faster, about half the cost) or Claude Haiku 4.5 (fastest and cheapest).
 - **Length**: Brief, Standard or Detailed.
+- **What I'm working on**: an optional one-line description of your current project or class. Summaries and answers put the relevant parts first.
 - **Automatic summaries**: whether to summarize automatically, whether to do so only on article-like pages, and which sites never to summarize automatically.
+
+**Flashcards in Anki:** Export for Anki downloads a text file. In Anki, choose File › Import, pick the file, and make sure the field separator is Tab (the file says so in its first line).
 
 To summarize files on your computer (`file://` pages), open `chrome://extensions`, click **Details** on Page Summarizer and turn on **Allow access to file URLs**.
 
@@ -66,13 +78,13 @@ Automatic summaries only run while the side panel is open. They only cover artic
 
 ## How it works
 
-- `src/background.js`: makes the toolbar icon open the side panel, and opens the settings page on first install.
+- `src/background.js`: makes the toolbar icon open the side panel, opens the settings page on first install, and owns the right-click menu for selected text.
 - `src/sidepanel.js`: tracks the active tab, decides whether to summarize, extracts the page, streams the summary and caches it in `chrome.storage.session`.
-- `src/content.js`: injected into the page on demand. It runs Readability and returns the article text with headings and lists preserved.
+- `src/content.js`: injected into the page on demand. It runs Readability and returns the article text with headings and lists preserved, plus bibliographic metadata (authors, dates, publisher, DOI) from meta tags and JSON-LD for citations.
 - `src/find-pdfs.js`: finds PDFs shown inside a page, including inside iframes, PDF.js viewers and shadow DOM. It also downloads them; if the site only gives the file to its own pages, it retries the download from inside the page. It also contains the page inspector behind **Copy debug info**.
 - `src/documents.js`: identifies a downloaded file. PDFs go to Claude as-is; Word and PowerPoint files are unzipped with [fflate](https://github.com/101arrowz/fflate) and their text is extracted, keeping headings, lists, table rows and slide order.
 - Brightspace/D2L topic pages (`/d2l/le/content/{course}/viewContent/{topic}/View` and `/d2l/le/lessons/{course}/topics/{topic}`) are handled in `src/sidepanel.js`. It fetches the topic's file from the Download button's address and falls back to Brightspace's `/d2l/api/le/{version}/{course}/content/topics/{topic}/file` API.
-- `src/summarize.js`: calls the Claude API for summaries and follow-up answers with the official [Anthropic TypeScript/JavaScript SDK](https://github.com/anthropics/anthropic-sdk-typescript), streaming the response. Summaries use low effort, because they don't need deep reasoning; answers to questions use medium effort. Questions use prompt caching, so the page is billed at full price only once per conversation. On Opus and Sonnet it also turns on server-side refusal fallbacks (`fallbacks: "default"`): if the model's safety filter declines a page, the API retries on Anthropic's recommended fallback model.
+- `src/summarize.js`: holds the prompts for summaries, styles, the study and credibility tools, and highlighted passages, and calls the Claude API for summaries and follow-up answers with the official [Anthropic TypeScript/JavaScript SDK](https://github.com/anthropics/anthropic-sdk-typescript), streaming the response. Summaries use low effort, because they don't need deep reasoning; answers to questions use medium effort. Questions use prompt caching, so the page is billed at full price only once per conversation. On Opus and Sonnet it also turns on server-side refusal fallbacks (`fallbacks: "default"`): if the model's safety filter declines a page, the API retries on Anthropic's recommended fallback model.
 - `src/markdown.js`: a small Markdown renderer that escapes all HTML, so a summary can't inject markup into the panel.
 - `src/settings.js` and `src/options.js`: settings storage and the settings page.
 

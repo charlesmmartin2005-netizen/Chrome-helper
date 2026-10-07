@@ -35,10 +35,22 @@ export const LENGTHS = {
   detailed: "Detailed — section-by-section with key facts",
 };
 
+// Who the summary is written for. Chosen in the side panel.
+export const STYLES = {
+  general: "General reader",
+  beginner: "New to the topic",
+  expert: "Expert",
+  skeptic: "Skeptic",
+};
+
 export const DEFAULT_SETTINGS = {
   apiKey: "",
   model: DEFAULT_MODEL,
   length: "standard",
+  style: "general",
+  // What the reader is working on, e.g. "a paper on eminent domain".
+  // Summaries lead with what's relevant to it.
+  focus: "",
   autoSummarize: true,
   articlesOnly: true,
   excludedSites: [
@@ -55,6 +67,8 @@ export async function loadSettings() {
   const settings = await chrome.storage.local.get(DEFAULT_SETTINGS);
   if (!MODELS[settings.model]) settings.model = DEFAULT_MODEL;
   if (!LENGTHS[settings.length]) settings.length = DEFAULT_SETTINGS.length;
+  if (!STYLES[settings.style]) settings.style = DEFAULT_SETTINGS.style;
+  settings.focus = String(settings.focus ?? "").trim().slice(0, 500);
   return settings;
 }
 

@@ -1178,10 +1178,20 @@
     standard: "Standard \u2014 TL;DR plus the key points",
     detailed: "Detailed \u2014 section-by-section with key facts"
   };
+  var STYLES = {
+    general: "General reader",
+    beginner: "New to the topic",
+    expert: "Expert",
+    skeptic: "Skeptic"
+  };
   var DEFAULT_SETTINGS = {
     apiKey: "",
     model: DEFAULT_MODEL,
     length: "standard",
+    style: "general",
+    // What the reader is working on, e.g. "a paper on eminent domain".
+    // Summaries lead with what's relevant to it.
+    focus: "",
     autoSummarize: true,
     articlesOnly: true,
     excludedSites: [
@@ -1197,6 +1207,8 @@
     const settings = await chrome.storage.local.get(DEFAULT_SETTINGS);
     if (!MODELS[settings.model]) settings.model = DEFAULT_MODEL;
     if (!LENGTHS[settings.length]) settings.length = DEFAULT_SETTINGS.length;
+    if (!STYLES[settings.style]) settings.style = DEFAULT_SETTINGS.style;
+    settings.focus = String(settings.focus ?? "").trim().slice(0, 500);
     return settings;
   }
   function saveSettings(changes) {
@@ -17359,6 +17371,7 @@ Please migrate to a newer model. Visit https://docs.anthropic.com/en/docs/resour
     $("apiKey").value = settings.apiKey;
     $("model").value = settings.model;
     $("length").value = settings.length;
+    $("focus").value = settings.focus;
     $("autoSummarize").checked = settings.autoSummarize;
     $("articlesOnly").checked = settings.articlesOnly;
     $("excludedSites").value = settings.excludedSites;
@@ -17378,6 +17391,7 @@ Please migrate to a newer model. Visit https://docs.anthropic.com/en/docs/resour
       apiKey,
       model,
       length: $("length").value,
+      focus: $("focus").value.trim(),
       autoSummarize: $("autoSummarize").checked,
       articlesOnly: $("articlesOnly").checked,
       excludedSites: $("excludedSites").value.trim()
