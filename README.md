@@ -39,9 +39,9 @@ The `desktop` folder holds a separate program that works outside Chrome: a small
 
 The browser-only features (automatic summaries as you browse, inline TL;DR chips, reading tracking, the selection popup, YouTube captions, Brightspace files) stay in the extension; use both.
 
-**Install:** run `Page Summarizer Setup 1.0.0.exe` (one click, no choices). It isn't code-signed, so Windows SmartScreen shows "Windows protected your PC": click **More info**, then **Run anyway**. On first start the card opens on Settings; paste your API key and click Save. The zip in the same release folder is a portable version: unzip it anywhere and run `Page Summarizer.exe`.
+**Install:** download `Page Summarizer-1.0.0-win-x64.zip` from the repository's Releases page, unzip it anywhere (for example a `Page Summarizer` folder in your Documents), and run `Page Summarizer.exe`. It isn't code-signed, so Windows SmartScreen may show "Windows protected your PC": click **More info**, then **Run anyway**. To start it automatically, turn on "Start when I log in" in Settings. On first start the card opens on Settings; paste your API key and click Save.
 
-**Build it yourself:** `cd desktop && npm install && npm run pack` produces the installer and zip in `desktop/release`. `npm start` runs it from source.
+**Build it yourself:** `cd desktop && npm install && npm run pack` produces the zip in `desktop/release` (and a one-click installer when built on Windows, or on Linux with 32-bit Wine). `npm start` runs it from source.
 
 ## Install
 
