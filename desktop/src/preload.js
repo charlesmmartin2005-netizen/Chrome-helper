@@ -1,7 +1,7 @@
 // The bridge between the overlay page and the main process. The page never
 // sees the API key; it asks the main process to do things and listens for
 // streamed results.
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 const invoke = (channel) => (payload) => ipcRenderer.invoke(channel, payload);
 const listen = (channel) => (callback) => {
@@ -23,6 +23,17 @@ contextBridge.exposeInMainWorld("desktop", {
   captureWindow: invoke("capture:window"),
   removeCapture: invoke("capture:remove"),
   clearCaptures: invoke("capture:clear"),
+  pickFiles: invoke("file:pick"),
+  loadFiles: invoke("file:load"),
+  addDocumentText: invoke("file:addText"),
+  // Dropped files: the page only gets File objects; this turns one into a path.
+  pathForFile: (file) => {
+    try {
+      return webUtils.getPathForFile(file);
+    } catch {
+      return "";
+    }
+  },
   getState: invoke("state:get"),
   reset: invoke("state:reset"),
 

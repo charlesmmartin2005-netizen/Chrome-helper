@@ -3,12 +3,14 @@
 import { renderMarkdown } from "../../../src/markdown.js";
 import { MODELS, STYLES, LENGTHS } from "../../../src/settings.js";
 import { TOOLS } from "../../../src/summarize.js";
+import { readDocument } from "../../../src/documents.js";
 
 const $ = (id) => document.getElementById(id);
 const els = Object.fromEntries(
   [
     "pill", "card", "new", "settings-button", "collapse", "main-view", "settings-view",
-    "cap-screen", "cap-window", "cap-region", "summarize", "windows", "windows-list", "windows-cancel",
+    "cap-screen", "cap-window", "cap-region", "cap-file", "cap-link", "link-row", "link-input", "link-cancel", "drop-hint",
+    "summarize", "windows", "windows-list", "windows-cancel",
     "captures", "captures-hint", "status", "status-text", "notice", "notice-text", "notice-action", "empty",
     "result", "style", "copy", "listen", "summary", "meta", "chat-log", "tools", "ask-form", "ask-input", "ask-send",
     "apiKey", "saveKey", "keyStatus", "model", "length", "focus", "launchAtLogin", "hk-toggle", "hk-capture",
@@ -50,6 +52,30 @@ async function init() {
   els.capWindow.addEventListener("click", showWindows);
   els.windowsCancel.addEventListener("click", () => (els.windows.hidden = true));
   els.summarize.addEventListener("click", () => (busyKind ? call("stop") : summarize()));
+  els.capFile.addEventListener("click", () => addFiles("pickFiles"));
+  els.capLink.addEventListener("click", () => {
+    els.linkRow.hidden = !els.linkRow.hidden;
+    if (!els.linkRow.hidden) els.linkInput.focus();
+  });
+  els.linkCancel.addEventListener("click", () => {
+    els.linkRow.hidden = true;
+    els.linkInput.value = "";
+  });
+  els.linkInput.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      els.linkRow.hidden = true;
+    }
+  });
+  els.linkRow.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const url = els.linkInput.value.trim();
+    if (!url) return;
+    els.linkRow.hidden = true;
+    els.linkInput.value = "";
+    addFiles("loadFiles", { url });
+  });
+  setupDropZone();
   els.style.addEventListener("change", async () => {
     settings = await call("saveSettings", { style: els.style.value });
     if (state.summary && !busyKind) summarize();
@@ -107,7 +133,9 @@ async function init() {
 
   window.desktop.onStream(onStream);
   window.desktop.onCapture((capture) => {
-    if (!state.captures.some((c) => c.id === capture.id)) state.captures.push(capture);
+    const index = state.captures.findIndex((c) => c.id === capture.id);
+    if (index >= 0) state.captures[index] = capture;
+    else state.captures.push(capture);
     renderCaptures();
   });
   window.desktop.onCommand(({ name }) => {
@@ -310,27 +338,138 @@ async function showWindows() {
   }
 }
 
+// ---------------------------------------------------------------- files
+
+// method is "pickFiles" (the open dialog) or "loadFiles" with { paths } or
+// { url }. Word and PowerPoint files come back for this page to unzip, since
+// the main process has no XML parser.
+async function addFiles(method, payload) {
+  els.notice.hidden = true;
+  els.windows.hidden = true;
+  setSysStatus("LOADING", "live");
+  try {
+    const result = await call(method, payload);
+    const errors = [...result.errors];
+    let added = result.added.length;
+    for (const item of result.extract) {
+      let doc = null;
+      try {
+        doc = readDocument({ data: item.data, name: item.name, contentType: item.contentType });
+      } catch {
+        doc = null;
+      }
+      let problem = null;
+      if (!doc) problem = `${item.name} isn't a kind of file All-Mind can read.`;
+      else if (doc.unsupported) problem = `${item.name} is ${doc.unsupported}, which All-Mind can't read yet.`;
+      else {
+        try {
+          await call("addDocumentText", { id: item.id, kind: doc.kind, text: doc.text });
+        } catch (err) {
+          problem = err.message;
+        }
+      }
+      if (problem) {
+        errors.push(problem);
+        added--;
+        state.captures = await call("removeCapture", item.id);
+        renderCaptures();
+      }
+    }
+    if (errors.length) showNotice(errors.join("\n"));
+    if (added && !state.summary && !busyKind) summarize();
+    else if (!busyKind) setSysStatus(errors.length && !added ? "FAULT" : state.summary ? "SYS READY" : state.captures.length ? "CAPTURED" : "STANDBY", errors.length && !added ? "fault" : "");
+  } catch (err) {
+    setSysStatus("FAULT", "fault");
+    showNotice(err.message);
+  }
+}
+
+// Files (or a link) dropped anywhere on the panel are analyzed too.
+function setupDropZone() {
+  let depth = 0;
+  const show = (on) => {
+    els.shell.classList.toggle("dropping", on);
+    els.dropHint.hidden = !on;
+  };
+  document.addEventListener("dragenter", (event) => {
+    event.preventDefault();
+    if (++depth === 1) show(true);
+  });
+  document.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  });
+  document.addEventListener("dragleave", () => {
+    if (--depth <= 0) {
+      depth = 0;
+      show(false);
+    }
+  });
+  document.addEventListener("drop", (event) => {
+    event.preventDefault();
+    depth = 0;
+    show(false);
+    const transfer = event.dataTransfer;
+    if (!transfer) return;
+    const paths = [...transfer.files].map((file) => window.desktop.pathForFile(file)).filter(Boolean);
+    if (paths.length) return addFiles("loadFiles", { paths });
+    const url = (transfer.getData("text/uri-list") || transfer.getData("text/plain") || "").split(/\r?\n/).find((line) => /^https?:\/\//i.test(line.trim()));
+    if (url) addFiles("loadFiles", { url: url.trim() });
+  });
+}
+
+const EXT_BADGES = { pdf: "PDF", docx: "DOCX", pptx: "PPTX", text: "TXT", image: "IMG", office: "…" };
+
+function itemDetails(c) {
+  if (c.type !== "file") return `${c.label} · ${c.width}×${c.height}${c.tiles > 1 ? `, sent as ${c.tiles} images` : ""}`;
+  const parts = [c.name, `${(c.size / 1024).toFixed(c.size > 1048576 ? 0 : 1)} KB`];
+  if (c.pages) parts.push(`${c.pages} pages`);
+  if (c.chars) parts.push(`${c.chars.toLocaleString("en-US")} characters${c.truncated ? " (cut at 300,000)" : ""}`);
+  if (c.width) parts.push(`${c.width}×${c.height}`);
+  return parts.join(" · ");
+}
+
 function renderCaptures() {
   const captures = state.captures;
   els.captures.hidden = captures.length === 0;
-  els.capturesHint.hidden = captures.length === 0 || captures.length > 2;
+  const shots = captures.filter((c) => c.type !== "file").length;
+  els.capturesHint.hidden = shots === 0 || shots > 2;
   els.captures.replaceChildren(
     ...captures.map((c, i) => {
       const fig = document.createElement("figure");
-      const img = document.createElement("img");
-      img.src = c.previewDataUrl;
-      img.alt = c.label;
-      img.title = `${c.label} · ${c.width}×${c.height}`;
+      const isFile = c.type === "file";
+      const number = String(i + 1).padStart(2, "0");
+      let visual;
+      if (c.previewDataUrl) {
+        visual = document.createElement("img");
+        visual.src = c.previewDataUrl;
+        visual.alt = c.label;
+      } else {
+        visual = document.createElement("div");
+        visual.className = "doc";
+        const ext = document.createElement("span");
+        ext.className = "ext";
+        ext.textContent = EXT_BADGES[c.kind] ?? "FILE";
+        const name = document.createElement("span");
+        name.className = "fname";
+        name.textContent = c.name;
+        visual.append(ext, name);
+      }
+      visual.title = itemDetails(c);
       const cap = document.createElement("figcaption");
-      cap.textContent = `CAP ${String(i + 1).padStart(2, "0")} · ${c.label.replace(/^(the |a )/, "")}${c.tiles > 1 ? ` ×${c.tiles}` : ""}`;
-      cap.title = `${c.label} · ${c.width}×${c.height}${c.tiles > 1 ? `, sent as ${c.tiles} images` : ""}`;
+      // File chips carry the name themselves; the caption is the slot (and pages).
+      cap.textContent = isFile
+        ? `DOC ${number}${c.pages ? ` · ${c.pages}p` : ""}`
+        : `CAP ${number} · ${c.label.replace(/^(the |a )/, "")}${c.tiles > 1 ? ` ×${c.tiles}` : ""}`;
+      cap.title = itemDetails(c);
       const remove = document.createElement("button");
       remove.type = "button";
       remove.className = "remove";
       remove.dataset.id = String(c.id);
-      remove.title = "Remove this screenshot";
+      remove.title = isFile ? "Remove this file" : "Remove this screenshot";
       remove.textContent = "×";
-      fig.append(img, cap, remove);
+      if (isFile) fig.classList.add("file");
+      fig.append(visual, cap, remove);
       return fig;
     }),
   );
@@ -406,7 +545,7 @@ function onSummaryEvent(event) {
       els.summary.innerHTML = "";
       els.chatLog.replaceChildren();
       els.meta.textContent = "";
-      els.statusText.textContent = `Reading ${event.captures > 1 ? `${event.captures} captures` : "the capture"} with ${MODELS[settings.model]?.shortLabel ?? settings.model}…`;
+      els.statusText.textContent = `Reading ${event.what ?? (event.captures > 1 ? `${event.captures} captures` : "the capture")} with ${MODELS[settings.model]?.shortLabel ?? settings.model}…`;
       els.status.hidden = false;
       setSysStatus("DECODING", "live");
       segments("busy");
@@ -723,3 +862,6 @@ async function saveKey() {
 }
 
 init().catch((err) => showNotice(`Something went wrong: ${err.message}`));
+
+// For the test harness.
+window.__panel = { addFiles };

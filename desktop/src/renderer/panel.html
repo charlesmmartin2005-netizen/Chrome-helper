@@ -15,6 +15,7 @@
     <div id="shell" class="shell" hidden>
       <span class="brk tl" aria-hidden="true"></span><span class="brk tr" aria-hidden="true"></span><span class="brk bl" aria-hidden="true"></span><span class="brk br" aria-hidden="true"></span>
       <div id="card" class="card">
+        <div id="drop-hint" class="drop-hint" hidden>drop to analyze</div>
         <div class="panel">
           <header class="hdr">
             <span class="tag">SYS</span>
@@ -31,9 +32,17 @@
               <button id="cap-screen" class="primary" type="button" title="Capture the whole screen">Screen</button>
               <button id="cap-window" type="button" title="Pick a window to capture">Window</button>
               <button id="cap-region" type="button" title="Drag a rectangle over part of the screen">Region</button>
+              <button id="cap-file" type="button" title="Open a PDF, Word, PowerPoint, image or text file">File</button>
+              <button id="cap-link" type="button" title="Download a file from a link">Link</button>
               <span class="spacer"></span>
               <button id="summarize" type="button" hidden>Analyze</button>
             </div>
+
+            <form id="link-row" class="link-row" hidden>
+              <input id="link-input" type="url" placeholder="https://… link to a PDF, document or image" spellcheck="false" aria-label="Link to a file" />
+              <button id="link-go" class="primary" type="submit">Fetch</button>
+              <button id="link-cancel" type="button">Cancel</button>
+            </form>
 
             <div id="windows" class="windows" hidden>
               <p class="mono muted small">select window</p>
@@ -58,7 +67,7 @@
               <p id="notice-text"></p>
               <button id="notice-action" type="button" hidden></button>
             </div>
-            <p id="empty" class="empty mono">no capture · press Screen or <kbd id="hotkey-capture">Ctrl+Shift+S</kbd></p>
+            <p id="empty" class="empty mono">no input · Screen or <kbd id="hotkey-capture">Ctrl+Shift+S</kbd> · open a File, drop files here, or paste a Link</p>
 
             <div id="result" hidden>
               <div class="style-row">

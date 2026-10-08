@@ -32,7 +32,8 @@ Click the toolbar icon to open a side panel. While the panel is open, it follows
 The `desktop` folder holds **All-Mind**, a separate program that works outside Chrome: a small floating button that stays on top of everything. Click it (or press **Ctrl+Shift+Space**) and it opens into a card; **Ctrl+Shift+S** captures the whole screen and summarizes it in one go. It reads the screen as an image, so it works with anything you can see: a PDF in Acrobat, Word, Kindle, slides, a paused video.
 
 - **Screen / Window / Region**: capture the whole screen, pick one window, or drag a rectangle over part of the screen (the screen freezes while you drag).
-- **Long documents**: scroll and capture again; up to 12 screenshots are summarized together as one document.
+- **Long documents**: scroll and capture again; up to 12 screenshots and files are summarized together as one document.
+- **Files**: open PDFs, Word and PowerPoint documents, images and text files with the **File** button, drop them onto the panel, or paste a link with **Link** to download one. PDFs and images go to Claude as they are; Word and PowerPoint text is extracted on your computer first. Up to 30 MB and 600 pages per file, and files can be mixed with screenshots. A link that needs a sign-in (like a course site) won't download; save the file in your browser and open it instead.
 - The same tools as the extension: questions about what's on screen, "Written for" styles, "what I'm working on", Explain it simply, Key terms, Quiz me, Flashcards with Anki export, Cite, Check the claims, Bias & framing, Steelman, Listen and Copy.
 - Lives in the system tray; closing the card only hides it. The tray menu has Settings, "Start when I log in" and Quit.
 - **Look**: a dark, chamfered HUD in soft steel-blue, with an open/close wipe, a decoding title and an analysis bar that fills while Claude works. Settings has an **Overlay opacity** slider (40–100%) for how see-through the panel is; text stays solid at any setting. Animations are reduced when Windows has "Show animations" turned off.
@@ -40,7 +41,7 @@ The `desktop` folder holds **All-Mind**, a separate program that works outside C
 
 The browser-only features (automatic summaries as you browse, inline TL;DR chips, reading tracking, the selection popup, YouTube captions, Brightspace files) stay in the extension; use both.
 
-**Install:** download `All-Mind-1.2.0-win-x64.zip` from the repository's Releases page, unzip it anywhere (for example an `All-Mind` folder in your Documents), and run `All-Mind.exe`. It isn't code-signed, so Windows SmartScreen may show "Windows protected your PC": click **More info**, then **Run anyway**. To start it automatically, turn on "Start when I log in" in Settings. On first start the card opens on Settings; paste your API key and click Save. If you used it while it was still called Page Summarizer, your key and settings are carried over automatically.
+**Install:** download `All-Mind-1.3.0-win-x64.zip` from the repository's Releases page, unzip it anywhere (for example an `All-Mind` folder in your Documents), and run `All-Mind.exe`. It isn't code-signed, so Windows SmartScreen may show "Windows protected your PC": click **More info**, then **Run anyway**. To start it automatically, turn on "Start when I log in" in Settings. On first start the card opens on Settings; paste your API key and click Save. If you used it while it was still called Page Summarizer, your key and settings are carried over automatically.
 
 **Build it yourself:** `cd desktop && npm install && npm run pack` produces the zip in `desktop/release` (and a one-click installer when built on Windows, or on Linux with 32-bit Wine). `npm start` runs it from source.
 

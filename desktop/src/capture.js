@@ -10,6 +10,7 @@ const TILE_ABOVE = 2200;
 const PREVIEW_WIDTH = 240;
 const JPEG_QUALITY = 85;
 let nextId = 1;
+export const nextCaptureId = () => nextId++;
 
 /** True when the image is a single flat color (a failed capture). */
 export function isBlank(image) {
@@ -112,7 +113,7 @@ export function finishCapture(image, label, method = "thumbnail") {
   const jpegs = tiles.map(toJpeg);
   const preview = image.resize({ width: PREVIEW_WIDTH, quality: "good" });
   return {
-    id: nextId++,
+    id: nextCaptureId(),
     label,
     width,
     height,

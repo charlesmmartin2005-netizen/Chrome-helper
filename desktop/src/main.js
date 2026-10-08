@@ -6,8 +6,9 @@ import path from "node:path";
 import fs from "node:fs";
 import Anthropic from "@anthropic-ai/sdk";
 import { loadSettings, saveSettings, loadApiKey, saveApiKey, dataFolder, migrateLegacyData, LEGACY_NAMES } from "./store.js";
-import { captureScreen, captureRegion, listWindows, captureWindow, pickerPaths, isBlank, finishCapture, captureViaStream } from "./capture.js";
+import { captureScreen, captureRegion, listWindows, captureWindow, pickerPaths, isBlank, finishCapture, captureViaStream, nextCaptureId } from "./capture.js";
 import { summaryParams, answerParams } from "./prompts.js";
+import { pickFiles, readLocalFile, downloadFile, makeAttachment, textAttachment } from "./files.js";
 import { MODELS } from "../../src/settings.js";
 import { estimateCost, describeError } from "../../src/summarize.js";
 
@@ -219,17 +220,54 @@ function publicSettings() {
 // ---------------------------------------------------------------- captures
 
 function publicCapture(c) {
-  const { jpegBase64, jpegs, ...rest } = c;
+  const { jpegBase64, jpegs, pdfBase64, text, ...rest } = c;
   return rest;
 }
 
+const LIMIT_MESSAGE = `You can add up to ${MAX_CAPTURES} screenshots and files at a time. Remove one first.`;
+
 function addCapture(capture) {
-  if (state.captures.length >= MAX_CAPTURES) {
-    throw new Error(`You can add up to ${MAX_CAPTURES} screenshots at a time. Remove one first.`);
-  }
+  if (state.captures.length >= MAX_CAPTURES) throw new Error(LIMIT_MESSAGE);
   state.captures.push(capture);
   send("capture:added", publicCapture(capture));
   return publicCapture(capture);
+}
+
+// Opens local files and/or downloads one link. Returns what was added, the
+// Word / PowerPoint files the page still has to extract text from, and the
+// errors, so one bad file doesn't stop the others.
+async function loadFiles({ paths = [], url = null } = {}) {
+  const result = { added: [], extract: [], errors: [] };
+  const sources = [...[].concat(paths ?? []).map((p) => ({ path: String(p) })), ...(url ? [{ url: String(url) }] : [])];
+  for (const source of sources) {
+    try {
+      const file = source.url ? await downloadFile(source.url) : readLocalFile(source.path);
+      const item = makeAttachment(file);
+      if (item.pending) {
+        // Keep the place in line while the page extracts the text.
+        const placeholder = { type: "file", id: nextCaptureId(), kind: "office", pending: true, name: item.name, size: item.size, source: item.source, label: `the file "${item.name}"`, at: Date.now() };
+        result.added.push(addCapture(placeholder));
+        result.extract.push({ ...item, id: placeholder.id });
+      } else {
+        result.added.push(addCapture(item));
+      }
+    } catch (err) {
+      result.errors.push(err.message);
+    }
+  }
+  return result;
+}
+
+// What goes to Claude: everything whose contents are in hand.
+const readyItems = () => state.captures.filter((c) => !c.pending);
+
+// "the capture", "3 captures", "the file", "2 files" or "4 items".
+function countLabel(items) {
+  const files = items.filter((i) => i.type === "file").length;
+  const shots = items.length - files;
+  if (!files) return shots > 1 ? `${shots} captures` : "the capture";
+  if (!shots) return files > 1 ? `${files} files` : "the file";
+  return `${items.length} items`;
 }
 
 async function captureAndSummarize() {
@@ -274,7 +312,7 @@ function stopRun() {
 }
 
 async function runSummary() {
-  if (!state.captures.length) throw new Error("Capture the screen first.");
+  if (!state.captures.length) throw new Error("Capture the screen or open a file first.");
   stopRun();
   const id = ++runCounter;
   const params = summaryParams({
@@ -282,13 +320,13 @@ async function runSummary() {
     length: settings.length,
     style: settings.style,
     focus: settings.focus,
-    captures: state.captures,
+    captures: readyItems(),
   });
   const stream = client().beta.messages.stream(params);
   state.run = { id, kind: "summary", stream };
   state.summary = null;
   state.chat = [];
-  send("ai:stream", { kind: "summary", type: "start", runId: id, captures: state.captures.length });
+  send("ai:stream", { kind: "summary", type: "start", runId: id, captures: readyItems().length, what: countLabel(readyItems()) });
   let text = "";
   stream.on("text", (delta) => {
     text += delta;
@@ -326,7 +364,7 @@ async function runAnswer({ question, label = null, structured = false }) {
   const params = answerParams({
     model: settings.model,
     focus: settings.focus,
-    captures: state.captures,
+    captures: readyItems(),
     summary: state.summary.text,
     history: state.chat.map(({ q, a }) => ({ q, a })),
     question,
@@ -422,6 +460,20 @@ function registerIpc() {
   });
   handle("capture:listWindows", () => listWindows(["All-Mind"]));
   handle("capture:window", async (sourceId) => addCapture(await captureWindow(sourceId, captureHooks)));
+  handle("file:pick", async () => loadFiles({ paths: await pickFiles(panel) }));
+  handle("file:load", (payload) => loadFiles(payload ?? {}));
+  // The page sends back the text of a Word / PowerPoint file; it takes the
+  // placeholder's place so the order the files were added in is kept.
+  handle("file:addText", ({ id, kind, text } = {}) => {
+    if (!["docx", "pptx", "text"].includes(kind)) throw new Error("Unknown document type.");
+    const index = state.captures.findIndex((c) => c.id === id && c.pending);
+    if (index < 0) throw new Error("That file was removed before it was read.");
+    const placeholder = state.captures[index];
+    const item = { ...textAttachment({ name: placeholder.name, size: placeholder.size, source: placeholder.source, kind, text }), id };
+    state.captures[index] = item;
+    send("capture:added", publicCapture(item));
+    return publicCapture(item);
+  });
   handle("capture:remove", (id) => {
     state.captures = state.captures.filter((c) => c.id !== id);
     return state.captures.map(publicCapture);
