@@ -35,11 +35,12 @@ The `desktop` folder holds a separate program that works outside Chrome: a small
 - **Long documents**: scroll and capture again; up to 12 screenshots are summarized together as one document.
 - The same tools as the extension: questions about what's on screen, "Written for" styles, "what I'm working on", Explain it simply, Key terms, Quiz me, Flashcards with Anki export, Cite, Check the claims, Bias & framing, Steelman, Listen and Copy.
 - Lives in the system tray; closing the card only hides it. The tray menu has Settings, "Start when I log in" and Quit.
+- **Look**: a dark, chamfered HUD in soft steel-blue, with an open/close wipe, a decoding title and an analysis bar that fills while Claude works. Settings has an **Overlay opacity** slider (40–100%) for how see-through the panel is; text stays solid at any setting. Animations are reduced when Windows has "Show animations" turned off.
 - Your API key is stored encrypted with Windows' own credential protection, in the app's data folder. Screenshots are kept only until you start over, and are sent only to Anthropic's API.
 
 The browser-only features (automatic summaries as you browse, inline TL;DR chips, reading tracking, the selection popup, YouTube captions, Brightspace files) stay in the extension; use both.
 
-**Install:** download `PageSummarizer-1.0.1-win-x64.zip` from the repository's Releases page, unzip it anywhere (for example a `Page Summarizer` folder in your Documents), and run `Page Summarizer.exe`. It isn't code-signed, so Windows SmartScreen may show "Windows protected your PC": click **More info**, then **Run anyway**. To start it automatically, turn on "Start when I log in" in Settings. On first start the card opens on Settings; paste your API key and click Save.
+**Install:** download `PageSummarizer-1.1.0-win-x64.zip` from the repository's Releases page, unzip it anywhere (for example a `Page Summarizer` folder in your Documents), and run `Page Summarizer.exe`. It isn't code-signed, so Windows SmartScreen may show "Windows protected your PC": click **More info**, then **Run anyway**. To start it automatically, turn on "Start when I log in" in Settings. On first start the card opens on Settings; paste your API key and click Save.
 
 **Build it yourself:** `cd desktop && npm install && npm run pack` produces the zip in `desktop/release` (and a one-click installer when built on Windows, or on Linux with 32-bit Wine). `npm start` runs it from source.
 

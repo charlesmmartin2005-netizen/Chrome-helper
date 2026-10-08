@@ -13,6 +13,7 @@ const els = Object.fromEntries(
     "result", "style", "copy", "listen", "summary", "meta", "chat-log", "tools", "ask-form", "ask-input", "ask-send",
     "apiKey", "saveKey", "keyStatus", "model", "length", "focus", "launchAtLogin", "hk-toggle", "hk-capture",
     "hotkey-warning", "settings-done", "open-data", "quit", "version", "hotkey-capture",
+    "shell", "title-text", "sys-status", "segbar", "segpct", "opacity", "opacity-value",
   ].map((id) => [id.replace(/-([a-z])/g, (_, c) => c.toUpperCase()), $(id)]),
 );
 
@@ -20,6 +21,9 @@ let settings = null;
 let state = { captures: [], summary: null, chat: [], busy: null };
 let busyKind = null; // "summary" | "answer" | null
 let currentAnswer = null; // { answerEl, metaEl }
+const GLYPHS = "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789#/\\|=+-_<>";
+const glyph = (i, tick) => GLYPHS[(i * 7 + tick * 13) % GLYPHS.length];
+let tick = 0;
 
 async function call(name, payload) {
   const reply = await window.desktop[name](payload);
@@ -94,6 +98,12 @@ async function init() {
   });
   els.openData.addEventListener("click", () => call("openDataFolder"));
   els.quit.addEventListener("click", () => call("quit"));
+  // Opacity: live while dragging, saved on release.
+  els.opacity.addEventListener("input", () => applyOpacity(Number(els.opacity.value) / 100));
+  els.opacity.addEventListener("change", async () => {
+    settings = await call("saveSettings", { opacity: Number(els.opacity.value) / 100 });
+  });
+  buildSegments();
 
   window.desktop.onStream(onStream);
   window.desktop.onCapture((capture) => {
@@ -132,6 +142,8 @@ function applySettingsToUi() {
   els.focus.value = settings.focus;
   els.launchAtLogin.checked = settings.launchAtLogin;
   els.style.value = settings.style;
+  els.opacity.value = String(Math.round((settings.opacity ?? 0.92) * 100));
+  applyOpacity(settings.opacity ?? 0.92);
   const label = (acc) => acc.replace("CommandOrControl", settings.platform === "darwin" ? "Cmd" : "Ctrl");
   els.hkToggle.textContent = label(settings.hotkeyToggle);
   els.hkCapture.textContent = label(settings.hotkeyCapture);
@@ -146,16 +158,101 @@ function applySettingsToUi() {
 // ---------------------------------------------------------------- layout
 
 // The window's size is owned by the main process; the page mirrors it.
-function applyExpanded(next) {
+// Opening: the window grows first, then brackets lock in and the panel
+// wipes in. Closing from the page: the wipe plays before the window shrinks.
+let closeTimer = null;
+function applyExpanded(next, { animateClose = false } = {}) {
+  clearTimeout(closeTimer);
   document.body.classList.toggle("expanded", next);
   document.body.classList.toggle("collapsed", !next);
-  els.card.hidden = !next;
-  els.pill.hidden = next;
+  if (next) {
+    els.shell.hidden = false;
+    els.shell.classList.remove("closing");
+    els.pill.hidden = true;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      els.shell.classList.add("open");
+      decodeTitle();
+    }));
+    return Promise.resolve();
+  }
+  els.shell.classList.remove("open");
+  if (!animateClose) {
+    els.shell.hidden = true;
+    els.pill.hidden = false;
+    return Promise.resolve();
+  }
+  els.shell.classList.add("closing");
+  return new Promise((resolve) => {
+    closeTimer = setTimeout(() => {
+      els.shell.hidden = true;
+      els.shell.classList.remove("closing");
+      els.pill.hidden = false;
+      resolve();
+    }, 340);
+  });
 }
 
 async function expand(next) {
-  applyExpanded(next);
+  await applyExpanded(next, { animateClose: !next });
   await call("setExpanded", next);
+}
+
+function applyOpacity(value) {
+  const alpha = Math.min(1, Math.max(0.4, value));
+  document.documentElement.style.setProperty("--alpha", String(alpha));
+  els.opacityValue.textContent = `${Math.round(alpha * 100)}%`;
+}
+
+// The title resolves out of glyphs when the panel opens.
+let titleTimer = null;
+function decodeTitle() {
+  const text = "PAGE SUMMARIZER";
+  let progress = 0;
+  clearInterval(titleTimer);
+  titleTimer = setInterval(() => {
+    progress += 2;
+    tick++;
+    els.titleText.textContent = [...text].map((ch, i) => (i < progress || ch === " " ? ch : glyph(i, tick))).join("");
+    if (progress >= text.length) clearInterval(titleTimer);
+  }, 40);
+}
+
+function setSysStatus(label, kind = "") {
+  els.sysStatus.textContent = label;
+  els.sysStatus.className = `mono status-label ${kind}`.trim();
+}
+
+// The segmented analysis bar: a running window while busy, full when done.
+const SEGMENTS = 20;
+let segTimer = null;
+function buildSegments() {
+  els.segbar.replaceChildren(...Array.from({ length: SEGMENTS }, () => document.createElement("i")));
+}
+function segments(mode) {
+  clearInterval(segTimer);
+  const cells = [...els.segbar.children];
+  const light = (test) => cells.forEach((cell, i) => cell.classList.toggle("on", test(i)));
+  if (mode === "busy") {
+    let pos = 0;
+    els.segpct.textContent = "…";
+    segTimer = setInterval(() => {
+      pos = (pos + 1) % (SEGMENTS + 4);
+      light((i) => i >= pos - 4 && i < pos);
+    }, 60);
+  } else if (mode === "done") {
+    light(() => true);
+    els.segpct.textContent = "100%";
+  } else {
+    light(() => false);
+    els.segpct.textContent = "0%";
+  }
+}
+
+// While text streams in, a short run of glyphs "decodes" at its end.
+function withDecodeTail(html) {
+  tick++;
+  const run = Array.from({ length: 8 }, (_, i) => glyph(i, tick)).join("");
+  return `${html}<span class="decode-tail">${run}</span>`;
 }
 
 function showSettings(show) {
@@ -169,10 +266,12 @@ function showSettings(show) {
 async function capture(method) {
   els.notice.hidden = true;
   els.windows.hidden = true;
+  setSysStatus("ACQUIRING", "live");
   try {
     const added = await call(method);
     if (added && !state.summary && !busyKind) summarize();
   } catch (err) {
+    setSysStatus("FAULT", "fault");
     showNotice(err.message);
   }
 }
@@ -223,8 +322,8 @@ function renderCaptures() {
       img.alt = c.label;
       img.title = `${c.label} · ${c.width}×${c.height}`;
       const cap = document.createElement("figcaption");
-      cap.textContent = `${i + 1}. ${c.label}${c.tiles > 1 ? ` (${c.tiles} tiles)` : ""}`;
-      cap.title = `${c.width}×${c.height}${c.tiles > 1 ? `, sent as ${c.tiles} images` : ""}`;
+      cap.textContent = `CAP ${String(i + 1).padStart(2, "0")} · ${c.label.replace(/^(the |a )/, "")}${c.tiles > 1 ? ` ×${c.tiles}` : ""}`;
+      cap.title = `${c.label} · ${c.width}×${c.height}${c.tiles > 1 ? `, sent as ${c.tiles} images` : ""}`;
       const remove = document.createElement("button");
       remove.type = "button";
       remove.className = "remove";
@@ -240,9 +339,10 @@ function renderCaptures() {
   els.summarize.hidden = n === 0;
   els.new.hidden = n === 0 && !state.summary;
   if (!busyKind) {
-    els.summarize.textContent = state.summary ? `Summarize again (${n})` : n > 1 ? `Summarize ${n} screenshots` : "Summarize";
+    els.summarize.textContent = state.summary ? `Analyze again ×${n}` : n > 1 ? `Analyze ×${n}` : "Analyze";
     els.summarize.classList.add("primary");
     els.summarize.classList.remove("stop");
+    if (!state.summary) setSysStatus(n ? "CAPTURED" : "STANDBY");
   }
 }
 
@@ -251,6 +351,7 @@ async function startOver() {
   await call("reset");
   state = { captures: [], summary: null, chat: [], busy: null };
   renderState();
+  decodeTitle();
 }
 
 // ---------------------------------------------------------------- summary & chat
@@ -305,8 +406,10 @@ function onSummaryEvent(event) {
       els.summary.innerHTML = "";
       els.chatLog.replaceChildren();
       els.meta.textContent = "";
-      els.statusText.textContent = `Reading ${event.captures > 1 ? `${event.captures} screenshots` : "the screen"} with ${MODELS[settings.model]?.shortLabel ?? settings.model}…`;
+      els.statusText.textContent = `Reading ${event.captures > 1 ? `${event.captures} captures` : "the capture"} with ${MODELS[settings.model]?.shortLabel ?? settings.model}…`;
       els.status.hidden = false;
+      setSysStatus("DECODING", "live");
+      segments("busy");
       els.summarize.textContent = "Stop";
       els.summarize.classList.remove("primary");
       els.summarize.classList.add("stop");
@@ -315,7 +418,7 @@ function onSummaryEvent(event) {
     case "delta":
       els.status.hidden = true;
       els.result.hidden = false;
-      els.summary.innerHTML = renderMarkdown(event.text);
+      els.summary.innerHTML = withDecodeTail(renderMarkdown(event.text));
       break;
     case "done":
       busyKind = null;
@@ -324,6 +427,8 @@ function onSummaryEvent(event) {
       els.result.hidden = false;
       els.summary.innerHTML = renderMarkdown(event.summary.text);
       els.meta.textContent = summaryMeta(event.summary);
+      setSysStatus("SYS READY");
+      segments("done");
       renderCaptures();
       setAsking(false);
       break;
@@ -331,6 +436,8 @@ function onSummaryEvent(event) {
     case "stopped":
       busyKind = null;
       els.status.hidden = true;
+      segments(state.summary ? "done" : "idle");
+      setSysStatus(event.type === "error" ? "FAULT" : state.summary ? "SYS READY" : "STANDBY", event.type === "error" ? "fault" : "");
       if (event.type === "error") showNotice(event.error);
       else if (!state.summary) els.empty.hidden = state.captures.length > 0;
       renderCaptures();
@@ -352,14 +459,16 @@ function onAnswerEvent(event) {
     case "start": {
       busyKind = "answer";
       currentAnswer = appendExchange({ q: event.q, label: event.label });
-      currentAnswer.answerEl.innerHTML = '<span class="spinner"></span> Thinking…';
+      currentAnswer.answerEl.innerHTML = '<span class="spinner"></span> Processing…';
       setAsking(true);
+      setSysStatus("DECODING", "live");
+      segments("busy");
       break;
     }
     case "delta":
       if (currentAnswer) {
         const follow = nearBottom();
-        currentAnswer.answerEl.innerHTML = renderMarkdown(event.text);
+        currentAnswer.answerEl.innerHTML = withDecodeTail(renderMarkdown(event.text));
         if (follow) scrollToBottom();
       }
       break;
@@ -372,11 +481,15 @@ function onAnswerEvent(event) {
       }
       currentAnswer = null;
       setAsking(false);
+      setSysStatus("SYS READY");
+      segments("done");
       scrollToBottom();
       break;
     case "error":
     case "stopped":
       busyKind = null;
+      setSysStatus(event.type === "error" ? "FAULT" : "SYS READY", event.type === "error" ? "fault" : "");
+      segments("done");
       if (currentAnswer) {
         if (event.type === "error") {
           currentAnswer.answerEl.textContent = event.error;
@@ -508,11 +621,13 @@ function renderState() {
     els.chatLog.replaceChildren();
   }
   els.empty.hidden = state.captures.length > 0 || Boolean(state.summary);
+  segments(state.summary ? "done" : "idle");
+  setSysStatus(state.summary ? "SYS READY" : state.captures.length ? "CAPTURED" : "STANDBY");
   setAsking(false);
 }
 
 function setAsking(busy) {
-  els.askSend.textContent = busy ? "Stop" : "Ask";
+  els.askSend.textContent = busy ? "Stop" : "Send";
   els.askSend.classList.toggle("stop", busy);
   for (const button of els.tools.querySelectorAll("button")) button.disabled = busy;
 }

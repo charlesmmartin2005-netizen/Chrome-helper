@@ -393,7 +393,7 @@ function friendlyError(err) {
 function registerIpc() {
   handle("settings:get", () => publicSettings());
   handle("settings:save", (changes) => {
-    const allowed = ["model", "length", "style", "focus", "launchAtLogin", "hotkeyToggle", "hotkeyCapture"];
+    const allowed = ["model", "length", "style", "focus", "launchAtLogin", "hotkeyToggle", "hotkeyCapture", "opacity"];
     const clean = Object.fromEntries(Object.entries(changes ?? {}).filter(([k]) => allowed.includes(k)));
     if (clean.model && !MODELS[clean.model]) delete clean.model;
     return applySettings(clean);

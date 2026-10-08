@@ -12,6 +12,13 @@ await cp("src/renderer/panel.css", "dist/renderer/panel.css");
 await cp("src/renderer/picker.html", "dist/renderer/picker.html");
 await cp("src/renderer/capture.html", "dist/renderer/capture.html");
 await cp("assets", "dist/assets", { recursive: true });
+await mkdir("dist/assets/fonts", { recursive: true });
+for (const [pkg, weights] of [["oxanium", [400, 500, 600, 700]], ["jetbrains-mono", [400, 500]]]) {
+  for (const w of weights) {
+    const name = `${pkg}-latin-${w}-normal.woff2`;
+    await cp(`node_modules/@fontsource/${pkg}/files/${name}`, `dist/assets/fonts/${name}`);
+  }
+}
 
 const node = {
   bundle: true,

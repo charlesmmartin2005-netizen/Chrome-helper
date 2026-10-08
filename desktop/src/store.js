@@ -16,6 +16,8 @@ export const DEFAULTS = {
   position: null,
   hotkeyToggle: "CommandOrControl+Shift+Space",
   hotkeyCapture: "CommandOrControl+Shift+S",
+  // How see-through the overlay's panel is (0.4–1).
+  opacity: 0.92,
 };
 
 const dir = () => app.getPath("userData");
@@ -34,6 +36,8 @@ export function loadSettings() {
   if (!LENGTHS[settings.length]) settings.length = DEFAULTS.length;
   if (!STYLES[settings.style]) settings.style = DEFAULTS.style;
   settings.focus = String(settings.focus ?? "").trim().slice(0, 500);
+  const opacity = Number(settings.opacity);
+  settings.opacity = Number.isFinite(opacity) ? Math.min(1, Math.max(0.4, opacity)) : DEFAULTS.opacity;
   return settings;
 }
 
