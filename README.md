@@ -27,6 +27,22 @@ Click the toolbar icon to open a side panel. While the panel is open, it follows
 - **Excluded sites**: email and messaging sites are excluded from automatic summaries by default. You can edit the list.
 - **Cost display**: each summary shows its token usage and an estimated cost.
 
+## Desktop app (Windows)
+
+The `desktop` folder holds a separate program that works outside Chrome: a small floating button that stays on top of everything. Click it (or press **Ctrl+Shift+Space**) and it opens into a card; **Ctrl+Shift+S** captures the whole screen and summarizes it in one go. It reads the screen as an image, so it works with anything you can see: a PDF in Acrobat, Word, Kindle, slides, a paused video.
+
+- **Screen / Window / Region**: capture the whole screen, pick one window, or drag a rectangle over part of the screen (the screen freezes while you drag).
+- **Long documents**: scroll and capture again; up to 12 screenshots are summarized together as one document.
+- The same tools as the extension: questions about what's on screen, "Written for" styles, "what I'm working on", Explain it simply, Key terms, Quiz me, Flashcards with Anki export, Cite, Check the claims, Bias & framing, Steelman, Listen and Copy.
+- Lives in the system tray; closing the card only hides it. The tray menu has Settings, "Start when I log in" and Quit.
+- Your API key is stored encrypted with Windows' own credential protection, in the app's data folder. Screenshots are kept only until you start over, and are sent only to Anthropic's API.
+
+The browser-only features (automatic summaries as you browse, inline TL;DR chips, reading tracking, the selection popup, YouTube captions, Brightspace files) stay in the extension; use both.
+
+**Install:** run `Page Summarizer Setup 1.0.0.exe` (one click, no choices). It isn't code-signed, so Windows SmartScreen shows "Windows protected your PC": click **More info**, then **Run anyway**. On first start the card opens on Settings; paste your API key and click Save. The zip in the same release folder is a portable version: unzip it anywhere and run `Page Summarizer.exe`.
+
+**Build it yourself:** `cd desktop && npm install && npm run pack` produces the installer and zip in `desktop/release`. `npm start` runs it from source.
+
 ## Install
 
 You don't need to build anything. The ready-to-load extension is in the `dist` folder.

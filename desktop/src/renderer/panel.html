@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+    <title>Page Summarizer</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body class="collapsed">
+    <button id="pill" class="pill" type="button" title="Page Summarizer — click to open" aria-label="Open Page Summarizer">
+      <img src="../assets/icon128.png" alt="" width="36" height="36" />
+    </button>
+
+    <div id="card" class="card" hidden>
+      <header class="bar">
+        <img src="../assets/icon128.png" alt="" width="20" height="20" />
+        <span class="title">Page Summarizer</span>
+        <span class="spacer"></span>
+        <button id="new" class="icon" type="button" title="Start over with a new capture" aria-label="Start over" hidden>↺</button>
+        <button id="settings-button" class="icon" type="button" title="Settings" aria-label="Settings">⚙</button>
+        <button id="collapse" class="icon" type="button" title="Collapse" aria-label="Collapse">—</button>
+      </header>
+
+      <section id="main-view" class="view">
+        <div class="capture-bar">
+          <button id="cap-screen" class="primary" type="button" title="Capture the whole screen">Screen</button>
+          <button id="cap-window" type="button" title="Pick a window to capture">Window</button>
+          <button id="cap-region" type="button" title="Drag a rectangle over part of the screen">Region</button>
+          <span class="spacer"></span>
+          <button id="summarize" type="button" hidden>Summarize</button>
+        </div>
+
+        <div id="windows" class="windows" hidden>
+          <p class="muted">Pick the window to capture:</p>
+          <div id="windows-list" class="windows-list"></div>
+          <button id="windows-cancel" type="button">Cancel</button>
+        </div>
+
+        <div id="captures" class="captures" hidden></div>
+        <p id="captures-hint" class="muted hint" hidden>For a long document, scroll and capture again; the screenshots are summarized together.</p>
+
+        <div id="status" class="status" role="status" hidden>
+          <span class="spinner" aria-hidden="true"></span>
+          <span id="status-text"></span>
+        </div>
+        <div id="notice" class="notice" hidden>
+          <p id="notice-text"></p>
+          <button id="notice-action" type="button" hidden></button>
+        </div>
+        <p id="empty" class="empty">Capture your screen, a window or a region, then summarize it. Or press <kbd id="hotkey-capture">Ctrl+Shift+S</kbd> anywhere.</p>
+
+        <div id="result" hidden>
+          <div class="style-row">
+            <label for="style">Written for</label>
+            <select id="style"></select>
+            <span class="spacer"></span>
+            <button id="copy" class="small" type="button">Copy</button>
+            <button id="listen" class="small" type="button" title="Read the summary aloud">Listen</button>
+          </div>
+          <article id="summary" class="summary" aria-live="polite"></article>
+          <p id="meta" class="meta"></p>
+          <div id="chat-log" class="chat-log"></div>
+          <div id="tools" class="tools"></div>
+          <form id="ask-form" class="ask">
+            <textarea id="ask-input" rows="1" placeholder="Ask about what's on screen…" aria-label="Ask about what's on screen"></textarea>
+            <button id="ask-send" class="primary" type="submit">Ask</button>
+          </form>
+        </div>
+      </section>
+
+      <section id="settings-view" class="view" hidden>
+        <h2>Settings</h2>
+        <label for="apiKey">Anthropic API key</label>
+        <div class="row">
+          <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…" />
+          <button id="saveKey" type="button">Save</button>
+        </div>
+        <p id="keyStatus" class="muted hint"></p>
+        <label for="model">Model</label>
+        <select id="model"></select>
+        <label for="length">Length</label>
+        <select id="length"></select>
+        <label for="focus">What I'm working on (optional)</label>
+        <input id="focus" type="text" maxlength="500" placeholder="e.g. a paper on eminent domain" />
+        <label class="check"><input id="launchAtLogin" type="checkbox" /> Start when I log in</label>
+        <h3>Shortcuts</h3>
+        <p class="muted hint">Show / hide: <kbd id="hk-toggle"></kbd> · Summarize screen: <kbd id="hk-capture"></kbd></p>
+        <p id="hotkey-warning" class="warning" hidden></p>
+        <div class="row">
+          <button id="settings-done" class="primary" type="button">Done</button>
+          <button id="open-data" type="button" title="Where settings are stored">Data folder</button>
+          <span class="spacer"></span>
+          <button id="quit" type="button">Quit</button>
+        </div>
+        <p class="muted hint">Screenshots are sent to Anthropic's API with your key to be summarized, and are kept only until you start over. The API key is stored encrypted on this computer. <span id="version"></span></p>
+      </section>
+
+      <footer class="muted">Summaries are written by Claude and can contain mistakes.</footer>
+    </div>
+    <script src="panel.js"></script>
+  </body>
+</html>
