@@ -1,7 +1,7 @@
 {
   "name": "page-summarizer-desktop",
   "productName": "Page Summarizer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Summarizes whatever is on your screen, in a floating overlay, using Claude.",
   "main": "dist/main.js",

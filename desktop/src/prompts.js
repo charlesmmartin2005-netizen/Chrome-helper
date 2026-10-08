@@ -34,14 +34,20 @@ Keep answers focused and conversational, in Markdown, using short paragraphs or 
 
 /** The first user message: the screenshots and the request. */
 export function screenUserContent(captures) {
-  const images = captures.map((c) => ({
-    type: "image",
-    source: { type: "base64", media_type: "image/jpeg", data: c.jpegBase64 },
-  }));
+  const images = captures.flatMap((c) =>
+    (c.jpegs ?? [c.jpegBase64]).map((data) => ({
+      type: "image",
+      source: { type: "base64", media_type: "image/jpeg", data },
+    })),
+  );
+  const tiled = captures.filter((c) => (c.tiles ?? 1) > 1).length;
+  const tileNote = tiled
+    ? ` ${tiled === 1 ? "One screenshot is" : `${tiled} screenshots are`} split into two overlapping halves (two images each) so the text is legible; treat each pair as one screen.`
+    : "";
   const text =
     captures.length === 1
-      ? `This is a screenshot of my screen (${captures[0].label}). Summarize what it shows.`
-      : `These are ${captures.length} screenshots of my screen, in order (${captures.map((c) => c.label).join(", ")}). Summarize what they show.`;
+      ? `This is a screenshot of my screen (${captures[0].label}).${tileNote} Summarize what it shows.`
+      : `These are ${captures.length} screenshots of my screen, in order (${captures.map((c) => c.label).join(", ")}).${tileNote} Summarize what they show.`;
   return [...images, { type: "text", text }];
 }
 

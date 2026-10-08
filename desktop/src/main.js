@@ -6,7 +6,7 @@ import path from "node:path";
 import fs from "node:fs";
 import Anthropic from "@anthropic-ai/sdk";
 import { loadSettings, saveSettings, loadApiKey, saveApiKey, dataFolder } from "./store.js";
-import { captureScreen, captureRegion, listWindows, captureWindow, pickerPaths } from "./capture.js";
+import { captureScreen, captureRegion, listWindows, captureWindow, pickerPaths, isBlank, finishCapture, captureViaStream } from "./capture.js";
 import { summaryParams, answerParams } from "./prompts.js";
 import { MODELS } from "../../src/settings.js";
 import { estimateCost, describeError } from "../../src/summarize.js";
@@ -212,7 +212,7 @@ function publicSettings() {
 // ---------------------------------------------------------------- captures
 
 function publicCapture(c) {
-  const { jpegBase64, ...rest } = c;
+  const { jpegBase64, jpegs, ...rest } = c;
   return rest;
 }
 
@@ -477,4 +477,4 @@ if (!gotLock) {
 }
 
 // Exposed for the test harness (Playwright drives the main process).
-globalThis.__ps = { state, setExpanded, captureAndSummarize, togglePanel, getPanel: () => panel };
+globalThis.__ps = { state, setExpanded, captureAndSummarize, togglePanel, getPanel: () => panel, test: { isBlank, finishCapture, captureViaStream } };

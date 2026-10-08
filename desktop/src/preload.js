@@ -40,4 +40,5 @@ contextBridge.exposeInMainWorld("desktop", {
   onCapture: listen("capture:added"),
   onCommand: listen("command"),
   onSettings: listen("settings:changed"),
+  onWindowState: listen("window:state"),
 });

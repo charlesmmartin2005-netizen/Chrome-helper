@@ -10,6 +10,7 @@ await mkdir("dist/renderer", { recursive: true });
 await cp("src/renderer/panel.html", "dist/renderer/panel.html");
 await cp("src/renderer/panel.css", "dist/renderer/panel.css");
 await cp("src/renderer/picker.html", "dist/renderer/picker.html");
+await cp("src/renderer/capture.html", "dist/renderer/capture.html");
 await cp("assets", "dist/assets", { recursive: true });
 
 const node = {

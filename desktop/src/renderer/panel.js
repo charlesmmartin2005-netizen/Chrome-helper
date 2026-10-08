@@ -107,13 +107,15 @@ async function init() {
     settings = next;
     applySettingsToUi();
   });
+  // Hotkeys and the tray expand or collapse the window from the main process.
+  window.desktop.onWindowState(({ expanded }) => applyExpanded(expanded));
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && document.body.classList.contains("expanded")) expand(false);
   });
 
   state = await call("getState");
   renderState();
-  if (state.expanded) expand(true);
+  applyExpanded(Boolean(state.expanded));
   if (!settings.hasKey) {
     expand(true);
     showSettings(true);
@@ -143,11 +145,16 @@ function applySettingsToUi() {
 
 // ---------------------------------------------------------------- layout
 
-async function expand(next) {
+// The window's size is owned by the main process; the page mirrors it.
+function applyExpanded(next) {
   document.body.classList.toggle("expanded", next);
   document.body.classList.toggle("collapsed", !next);
   els.card.hidden = !next;
   els.pill.hidden = next;
+}
+
+async function expand(next) {
+  applyExpanded(next);
   await call("setExpanded", next);
 }
 
@@ -216,7 +223,8 @@ function renderCaptures() {
       img.alt = c.label;
       img.title = `${c.label} · ${c.width}×${c.height}`;
       const cap = document.createElement("figcaption");
-      cap.textContent = `${i + 1}. ${c.label}`;
+      cap.textContent = `${i + 1}. ${c.label}${c.tiles > 1 ? ` (${c.tiles} tiles)` : ""}`;
+      cap.title = `${c.width}×${c.height}${c.tiles > 1 ? `, sent as ${c.tiles} images` : ""}`;
       const remove = document.createElement("button");
       remove.type = "button";
       remove.className = "remove";
