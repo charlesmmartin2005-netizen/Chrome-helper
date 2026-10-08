@@ -12,6 +12,7 @@ const options = {
   entryPoints: {
     background: "src/background.js",
     content: "src/content.js",
+    inpage: "src/inpage.js",
     sidepanel: "src/sidepanel.js",
     options: "src/options.js",
   },

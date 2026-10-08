@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Page Summarizer",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Automatically summarizes the article or site you're viewing, using Claude.",
   "minimum_chrome_version": "120",
   "permissions": ["sidePanel", "storage", "scripting", "contextMenus", "tts"],
@@ -9,6 +9,13 @@
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["inpage.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "side_panel": {
     "default_path": "sidepanel.html"
   },

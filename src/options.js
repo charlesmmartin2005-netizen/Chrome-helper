@@ -31,6 +31,9 @@ async function init() {
   $("articlesOnly").checked = settings.articlesOnly;
   $("excludedSites").value = settings.excludedSites;
   $("keepHistory").checked = settings.keepHistory;
+  $("explainButton").checked = settings.explainButton;
+  $("trackReading").checked = settings.trackReading;
+  $("skippedSummaries").checked = settings.skippedSummaries;
   if (!settings.apiKey) $("apiKey").focus();
   showHistoryCount();
 }
@@ -65,6 +68,9 @@ form.addEventListener("submit", async (event) => {
     articlesOnly: $("articlesOnly").checked,
     excludedSites: $("excludedSites").value.trim(),
     keepHistory: $("keepHistory").checked,
+    explainButton: $("explainButton").checked,
+    trackReading: $("trackReading").checked,
+    skippedSummaries: $("skippedSummaries").checked,
   });
 
   if (!apiKey) {

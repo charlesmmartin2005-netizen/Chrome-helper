@@ -44,10 +44,20 @@
       <label for="style">Written for</label>
       <select id="style" aria-label="Who the summary is written for"></select>
       <span class="spacer"></span>
-      <button id="save" type="button" title="Save this summary and its source to the notebook" hidden>Save to notebook</button>
+      <button id="save" type="button" title="Save this summary and its source to the notebook" hidden>Save</button>
     </div>
 
     <main>
+      <div id="skipped" class="notice skipped" hidden>
+        <p class="skipped-title">What you skipped on <a id="skipped-link" href="#"></a></p>
+        <div id="skipped-status" class="status" hidden>
+          <span class="spinner" aria-hidden="true"></span>
+          <span id="skipped-status-text"></span>
+        </div>
+        <div id="skipped-text" class="summary"></div>
+        <p id="skipped-meta" class="skipped-meta"></p>
+        <button id="skipped-dismiss" type="button">Dismiss</button>
+      </div>
       <div id="status" class="status" role="status" hidden>
         <span class="spinner" aria-hidden="true"></span>
         <span id="status-text"></span>
@@ -66,6 +76,10 @@
       <section id="chat" class="chat" aria-label="Questions about this page" hidden>
         <div id="chat-log" class="chat-log" aria-live="polite"></div>
         <div id="tools" class="tools"></div>
+        <div id="onpage-note" class="notice onpage" hidden>
+          <p id="onpage-text"></p>
+          <button id="onpage-action" type="button"></button>
+        </div>
         <form id="ask-form" class="ask">
           <textarea id="ask-input" rows="1" placeholder="Ask a question about this page…" aria-label="Ask a question about this page"></textarea>
           <button id="ask-send" class="primary" type="submit">Ask</button>
@@ -109,7 +123,7 @@
           <input id="new-project-name" type="text" maxlength="80" placeholder="Project name, e.g. Eminent domain paper" />
           <button class="primary" type="submit">Add</button>
         </form>
-        <p id="notebook-empty" class="lead" hidden>Nothing saved here yet. On the Page view, click <b>Save to notebook</b> under a summary.</p>
+        <p id="notebook-empty" class="lead" hidden>Nothing saved here yet. On the Page view, click <b>Save</b> under a summary.</p>
         <ol id="notebook-list" class="notebook-list"></ol>
         <div class="tabs-actions">
           <button id="synthesize" class="primary" type="button">Write a synthesis</button>

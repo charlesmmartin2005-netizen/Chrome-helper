@@ -16,7 +16,11 @@ import {
   streamCompare,
   streamSynthesis,
   whatsNewQuestion,
+  streamInline,
+  streamSkipped,
+  skippedQuestion,
 } from "./summarize.js";
+import { youtubeVideoId, fetchTranscript, timestampSeconds } from "./youtube.js";
 import { fingerprint, findSimilar, remember } from "./history.js";
 import {
   loadNotebook,
@@ -62,6 +66,16 @@ const els = {
   noticeAction: $("notice-action"),
   summary: $("summary"),
   meta: $("meta"),
+  skipped: $("skipped"),
+  skippedLink: $("skipped-link"),
+  skippedStatus: $("skipped-status"),
+  skippedStatusText: $("skipped-status-text"),
+  skippedText: $("skipped-text"),
+  skippedMeta: $("skipped-meta"),
+  skippedDismiss: $("skipped-dismiss"),
+  onpageNote: $("onpage-note"),
+  onpageText: $("onpage-text"),
+  onpageAction: $("onpage-action"),
   seen: $("seen"),
   seenText: $("seen-text"),
   seenAction: $("seen-action"),
@@ -157,6 +171,24 @@ async function init() {
   });
   initTabsView();
   initNotebookView();
+  els.skippedDismiss.addEventListener("click", () => (els.skipped.hidden = true));
+  els.skippedLink.addEventListener("click", async (event) => {
+    event.preventDefault();
+    // Back to the page: its tab if it's still showing it, else a new tab.
+    const tabId = Number(els.skippedLink.dataset.tabId);
+    const url = els.skippedLink.href;
+    const tab = tabId ? await chrome.tabs.get(tabId).catch(() => null) : null;
+    if (tab && normalizeUrl(tab.url) === url) chrome.tabs.update(tabId, { active: true }).catch(() => {});
+    else chrome.tabs.create({ url, windowId }).catch(() => {});
+  });
+  chrome.runtime.onMessage.addListener((message, sender) => {
+    if (message?.ps === "trackingSnapshot" && sender.tab) {
+      snapshots.set(sender.tab.id, { ...message.snapshot, at: Date.now() });
+    }
+  });
+  els.summary.addEventListener("click", onStampClick);
+  els.chatLog.addEventListener("click", onStampClick);
+  els.skippedText.addEventListener("click", onStampClick);
   for (const [value, label] of Object.entries(STYLES)) els.style.add(new Option(label, value));
   els.style.value = settings.style;
   els.style.addEventListener("change", () => saveSettings({ style: els.style.value }));
@@ -253,6 +285,7 @@ async function refresh(mode) {
 
   const myRun = ++runId;
   cancelWork();
+  if (tracked && (tracked.tabId !== tab.id || tracked.url !== url)) leavePage(tracked);
   shown = { tabId: tab.id, url, state: "blocked" };
   resetView();
 
@@ -420,6 +453,8 @@ async function summarize(page, key, myRun) {
       createdAt: Date.now(),
       chat: [],
       source: sourceOf(page),
+      video: Boolean(page.video),
+      inline: null,
     };
     shown.state = "done";
     currentKey = key;
@@ -499,7 +534,7 @@ function stopAsking() {
 // The question is what's sent to Claude; label (if given) is what the panel
 // shows for it, for tools and highlighted passages. structured asks for
 // flashcards as JSON.
-async function ask(rawQuestion, { label = null, structured = false } = {}) {
+async function ask(rawQuestion, { label = null, structured = false, onProgress = null } = {}) {
   const question = rawQuestion.trim();
   if (!question || !currentEntry || asking) return;
   const entry = currentEntry;
@@ -547,7 +582,9 @@ async function ask(rawQuestion, { label = null, structured = false } = {}) {
           if (finished) return;
           const follow = nearBottom();
           answerEl.innerHTML = renderMarkdown(text);
+          linkTimestamps(answerEl);
           if (follow) scrollToBottom();
+          onProgress?.({ text, done: false });
         });
       });
     }
@@ -558,6 +595,7 @@ async function ask(rawQuestion, { label = null, structured = false } = {}) {
     if (message.stop_reason === "refusal") {
       answerEl.textContent = "Claude declined to answer that.";
       answerEl.classList.add("error");
+      onProgress?.({ error: "Claude declined to answer that." });
       return;
     }
     const answer = message.content
@@ -577,6 +615,7 @@ async function ask(rawQuestion, { label = null, structured = false } = {}) {
     renderAnswer(answerEl, turn);
     metaEl.textContent = turnMeta(turn);
     entry.chat = [...(entry.chat ?? []), turn];
+    onProgress?.({ text: turn.a, done: true });
     if (key) await putCached(key, entry);
   } catch (err) {
     finished = true;
@@ -584,10 +623,12 @@ async function ask(rawQuestion, { label = null, structured = false } = {}) {
     if (err instanceof Anthropic.APIUserAbortError) {
       if (answerEl.querySelector(".spinner")) answerEl.textContent = "";
       metaEl.textContent = "Stopped.";
+      onProgress?.({ error: "Stopped." });
       return;
     }
     answerEl.textContent = describeError(err);
     answerEl.classList.add("error");
+    onProgress?.({ error: describeError(err) });
     hideStatus();
     if (!label && !els.askInput.value) els.askInput.value = question;
   } finally {
@@ -599,6 +640,8 @@ async function ask(rawQuestion, { label = null, structured = false } = {}) {
 function runTool(id) {
   const tool = TOOLS[id];
   if (!tool) return;
+  if (id === "inline") return inlineSummaries();
+  if (id === "skipped") return skippedNow();
   let prompt = tool.prompt;
   if (id === "cite") {
     const today = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
@@ -626,6 +669,7 @@ function renderAnswer(answerEl, turn) {
   answerEl.dataset.copyText = turn.a;
   if (!turn.cards) {
     answerEl.innerHTML = renderMarkdown(turn.a);
+    linkTimestamps(answerEl);
     return;
   }
   answerEl.replaceChildren();
@@ -689,9 +733,17 @@ async function handleSelection() {
       await refresh("manual");
       for (let i = 0; i < 1200 && shown.state === "working"; i++) await new Promise((r) => setTimeout(r, 100));
     }
-    if (!currentEntry) return; // the summary failed; its notice explains why
+    const toPage = sel.inPage
+      ? (result) => pageMessage(sel.tabId, { ps: "explainResult", ...result }, { frameId: sel.frameId, inject: false }).catch(() => {})
+      : null;
+    if (!currentEntry) {
+      // The summary failed; its notice explains why.
+      toPage?.({ error: els.noticeText.textContent || "Couldn't read this page." });
+      return;
+    }
     await ask(selectionQuestion(sel.mode, sel.text), {
       label: `${{ explain: "Explain", define: "Define", matter: "Why it matters" }[sel.mode] ?? "Explain"}: “${sel.text.length > 120 ? sel.text.slice(0, 120).trim() + "…" : sel.text}”`,
+      onProgress: toPage,
     });
   } finally {
     selectionBusy = false;
@@ -757,6 +809,7 @@ function renderTools() {
       button.type = "button";
       button.dataset.tool = id;
       button.textContent = tool.label;
+      if (tool.title) button.title = tool.title;
       row.append(button);
     }
     els.tools.append(row);
@@ -798,6 +851,29 @@ function scrollToBottom() {
 
 async function extractPage(tab, url) {
   runLog = [];
+  if (youtubeVideoId(url)) {
+    showStatus("Getting the video's transcript…");
+    try {
+      const transcript = await fetchTranscript(url, { preferredLang: navigator.language });
+      if (transcript) {
+        runLog.push(`YouTube transcript: ${transcript.segments.length} captions (${transcript.language}${transcript.autoGenerated ? ", auto-generated" : ""})`);
+        return {
+          url,
+          title: transcript.title || tab.title,
+          byline: null,
+          siteName: "YouTube",
+          readerable: true,
+          text: transcript.text.slice(0, MAX_CHARS),
+          truncated: transcript.text.length > MAX_CHARS,
+          meta: null,
+          video: { videoId: transcript.videoId, duration: transcript.duration, autoGenerated: transcript.autoGenerated },
+        };
+      }
+      runLog.push("YouTube: no captions on this video");
+    } catch (err) {
+      runLog.push(`YouTube transcript failed: ${err.message}`);
+    }
+  }
   let result;
   try {
     await chrome.scripting.executeScript({
@@ -1152,7 +1228,7 @@ function showSummary(entry, { fromCache = false } = {}) {
   } else if (fromCache) parts.push("saved summary");
   els.save.hidden = !entry.text;
   els.save.disabled = false;
-  els.save.textContent = "Save to notebook";
+  els.save.textContent = "Save";
   const notes = [];
   if (entry.fileKind) notes.push(`Summarized the ${FILE_LABELS[entry.fileKind]} shown on this page.`);
   if (entry.truncated) notes.push("This was very long, so only the first part was summarized.");
@@ -1160,6 +1236,8 @@ function showSummary(entry, { fromCache = false } = {}) {
   els.meta.textContent = [parts.join(" · "), ...notes].join("\n");
   els.meta.hidden = false;
   renderChat(entry);
+  linkTimestamps(els.summary);
+  if (!entry.fileKind && !entry.pdf) startTracking(entry);
 }
 
 function formatCost(cost) {
@@ -1284,7 +1362,7 @@ async function saveToNotebook() {
     summary: currentEntry.text,
     project: settings.notebookProject || DEFAULT_PROJECT,
   });
-  els.save.textContent = `Saved to ${settings.notebookProject || DEFAULT_PROJECT} ✓`;
+  els.save.textContent = `Saved ✓ (${settings.notebookProject || DEFAULT_PROJECT})`;
   els.save.disabled = true;
   if (!document.getElementById("notebook-view").hidden) loadNotebookView();
 }
@@ -1740,4 +1818,228 @@ function downloadText(name, text, type) {
   link.download = name.replace(/[\\/:*?"<>|]+/g, " ");
   link.click();
   setTimeout(() => URL.revokeObjectURL(link.href), 10_000);
+}
+
+// ---------------------------------------------------------------- on the page
+
+// Talks to the in-page script, injecting it first if the tab predates the
+// extension (content scripts only load into pages opened afterwards).
+async function pageMessage(tabId, message, { frameId = 0, inject = true } = {}) {
+  const send = () => chrome.tabs.sendMessage(tabId, message, { frameId });
+  try {
+    return await send();
+  } catch (err) {
+    if (!inject || !/Receiving end does not exist|Could not establish connection/.test(err.message)) throw err;
+    await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, files: ["inpage.js"] });
+    return send();
+  }
+}
+
+// Reading tracking: which sections of the current page have been on screen.
+let tracked = null; // { tabId, url, title, key, entry }
+const snapshots = new Map(); // tabId -> latest snapshot from the page
+
+async function startTracking(entry) {
+  if (!settings.trackReading || !shown.url || !/^https?:/.test(shown.url)) return;
+  if (tracked?.tabId === shown.tabId && tracked?.url === shown.url) return;
+  const target = { tabId: shown.tabId, url: shown.url, title: els.title.textContent, key: currentKey, entry };
+  tracked = target;
+  try {
+    const reply = await pageMessage(target.tabId, { ps: "track" });
+    runLog.push(`Tracking ${reply?.sections ?? 0} sections`);
+  } catch (err) {
+    runLog.push(`Tracking unavailable: ${err.message}`);
+    if (tracked === target) tracked = null;
+  }
+}
+
+function skippedSections(snapshot) {
+  const sections = (snapshot?.sections ?? []).filter((s) => !s.read && s.words >= 40 && s.text);
+  const words = sections.reduce((n, s) => n + s.words, 0);
+  return { sections, words };
+}
+
+// Called when the panel moves on from a tracked page: summarize what was
+// scrolled past, if that's worth doing.
+async function leavePage(target) {
+  tracked = null;
+  let snapshot = snapshots.get(target.tabId);
+  try {
+    const live = await chrome.tabs.sendMessage(target.tabId, { ps: "tracking" });
+    if (live?.url === target.url) snapshot = live;
+  } catch {
+    // The tab is gone or navigated; use the last snapshot it sent.
+  }
+  snapshots.delete(target.tabId);
+  if (!snapshot || snapshot.url !== target.url) return;
+  if (!settings.skippedSummaries || !settings.apiKey) return;
+  const total = snapshot.sections.length;
+  const readCount = snapshot.sections.filter((s) => s.read).length;
+  const { sections, words } = skippedSections(snapshot);
+  // Nothing was read at all (a glance), or nearly everything was: no card.
+  if (readCount === 0 || sections.length === 0 || words < 120) return;
+  if (readCount >= total - 1 && words < 300) return;
+
+  els.skippedLink.textContent = target.title;
+  els.skippedLink.dataset.tabId = String(target.tabId);
+  els.skippedLink.href = target.url;
+  els.skippedText.innerHTML = "";
+  els.skippedMeta.textContent = "";
+  els.skippedStatusText.textContent = `Summarizing ${sections.length} skipped ${sections.length === 1 ? "section" : "sections"} (about ${words.toLocaleString()} words)…`;
+  els.skippedStatus.hidden = false;
+  els.skipped.hidden = false;
+
+  const stream = streamSkipped(createClient(settings.apiKey), {
+    model: settings.model,
+    title: target.title,
+    url: target.url,
+    sections,
+  });
+  let text = "";
+  stream.on("text", (delta) => {
+    text += delta;
+    els.skippedStatus.hidden = true;
+    els.skippedText.innerHTML = renderMarkdown(text);
+  });
+  try {
+    const message = await stream.finalMessage();
+    els.skippedStatus.hidden = true;
+    const answer = message.content.filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+    els.skippedText.innerHTML = renderMarkdown(answer);
+    const parts = [`${sections.length} of ${total} sections, ${words.toLocaleString()} words`];
+    const cost = estimateCost(message);
+    if (cost != null) parts.push(formatCost(cost));
+    els.skippedMeta.textContent = parts.join(" · ");
+    // Keep it in that page's conversation too.
+    if (target.key) {
+      const entry = await getCached(target.key);
+      if (entry) {
+        entry.chat = [...(entry.chat ?? []), { q: skippedQuestion(sections), a: answer, label: "What did I skip?", model: message.model, cost }];
+        await putCached(target.key, entry);
+      }
+    }
+  } catch (err) {
+    els.skippedStatus.hidden = true;
+    if (err instanceof Anthropic.APIUserAbortError) return;
+    els.skippedText.textContent = describeError(err);
+    els.skippedText.classList.add("error");
+  }
+}
+
+// The "What did I skip?" button for the page being shown now.
+async function skippedNow() {
+  if (!currentEntry || asking) return;
+  let snapshot = null;
+  try {
+    snapshot = await pageMessage(shown.tabId, { ps: "tracking" });
+  } catch {
+    // Fall through to the message below.
+  }
+  if (!snapshot) {
+    if (!settings.trackReading) return showOnpageNote("Reading tracking is turned off in Settings, so there's nothing to compare against.");
+    return showOnpageNote("Nothing tracked yet on this page. Scroll through it a little, then try again.");
+  }
+  const { sections, words } = skippedSections(snapshot);
+  if (!sections.length) return showOnpageNote("You've been through all of this page's sections.");
+  els.onpageNote.hidden = true;
+  await ask(skippedQuestion(sections), { label: `What did I skip? (${sections.length} ${sections.length === 1 ? "section" : "sections"}, ${words.toLocaleString()} words)` });
+}
+
+// One-line summaries next to the page's headings.
+let inlineBusy = false;
+async function inlineSummaries() {
+  if (!currentEntry || inlineBusy) return;
+  const entry = currentEntry;
+  const key = currentKey;
+  const tabId = shown.tabId;
+  inlineBusy = true;
+  const button = els.tools.querySelector("button[data-tool=inline]");
+  const original = button?.textContent;
+  try {
+    if (entry.inline?.length) {
+      // Already written for this page: just put the markers back.
+      const reply = await pageMessage(tabId, { ps: "markers", items: entry.inline });
+      return showInlineNote(reply.inserted, tabId, entry);
+    }
+    if (button) button.textContent = "Reading sections…";
+    const { sections } = await pageMessage(tabId, { ps: "sections", maxChars: 3000 });
+    const usable = sections.filter((s) => s.text.length >= 120);
+    if (usable.length < 2) return showOnpageNote("This page doesn't have enough separate sections for inline summaries.");
+    if (button) button.textContent = `Summarizing ${usable.length} sections…`;
+    const stream = streamInline(createClient(settings.apiKey), { model: settings.model, title: els.title.textContent, sections: usable });
+    const message = await stream.finalMessage();
+    if (message.stop_reason === "refusal") return showOnpageNote("Claude declined to summarize this page's sections.");
+    let items;
+    try {
+      items = JSON.parse(message.content.filter((b) => b.type === "text").map((b) => b.text).join("")).items;
+    } catch {
+      return showOnpageNote("The inline summaries came back in an unexpected format. Try again.");
+    }
+    const byIndex = new Map(usable.map((s) => [s.index, s]));
+    items = items.filter((it) => byIndex.has(it.index) && typeof it.tldr === "string" && it.tldr.trim()).map((it) => ({ index: it.index, tldr: it.tldr.trim() }));
+    if (shown.tabId !== tabId) return;
+    const reply = await pageMessage(tabId, { ps: "markers", items });
+    entry.inline = items;
+    entry.inlineCost = estimateCost(message);
+    if (key) await putCached(key, entry);
+    showInlineNote(reply.inserted, tabId, entry);
+  } catch (err) {
+    showOnpageNote(describeError(err));
+  } finally {
+    inlineBusy = false;
+    if (button && original) button.textContent = original;
+  }
+}
+
+function showInlineNote(count, tabId, entry) {
+  const cost = entry.inlineCost != null ? ` · ${formatCost(entry.inlineCost)}` : "";
+  showOnpageNote(`Added one-line summaries next to ${count} ${count === 1 ? "heading" : "headings"} on the page${cost}.`, "Remove them", async () => {
+    await pageMessage(tabId, { ps: "clearMarkers" }).catch(() => {});
+    els.onpageNote.hidden = true;
+  });
+}
+
+function showOnpageNote(text, actionLabel = null, onClick = null) {
+  els.onpageText.textContent = text;
+  if (actionLabel) {
+    els.onpageAction.textContent = actionLabel;
+    els.onpageAction.onclick = onClick;
+    els.onpageAction.hidden = false;
+  } else {
+    els.onpageAction.hidden = true;
+  }
+  els.onpageNote.hidden = false;
+}
+
+// Video timestamps like [12:34] in a summary become buttons that seek the
+// video on the page.
+function linkTimestamps(root) {
+  if (!currentEntry?.video) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) if (/\[\d{1,2}:\d{2}(?::\d{2})?\]/.test(walker.currentNode.nodeValue)) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    if (node.parentElement?.closest("button.stamp")) continue;
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    for (const match of node.nodeValue.matchAll(/\[(\d{1,2}:\d{2}(?::\d{2})?)\]/g)) {
+      frag.append(node.nodeValue.slice(last, match.index));
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "stamp";
+      button.dataset.seconds = String(timestampSeconds(match[1]) ?? 0);
+      button.title = "Jump to this point in the video";
+      button.textContent = match[1];
+      frag.append(button);
+      last = match.index + match[0].length;
+    }
+    frag.append(node.nodeValue.slice(last));
+    node.replaceWith(frag);
+  }
+}
+
+function onStampClick(event) {
+  const button = event.target.closest("button.stamp");
+  if (!button) return;
+  pageMessage(shown.tabId, { ps: "seek", seconds: Number(button.dataset.seconds) }).catch(() => {});
 }

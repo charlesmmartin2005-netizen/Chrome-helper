@@ -55,6 +55,11 @@ export const DEFAULT_SETTINGS = {
   keepHistory: true,
   // The notebook project "Save to notebook" adds to.
   notebookProject: "General",
+  // On the page: the Explain button on selected text, reading tracking, and
+  // summarizing skipped sections when you leave a page.
+  explainButton: true,
+  trackReading: true,
+  skippedSummaries: true,
   autoSummarize: true,
   articlesOnly: true,
   excludedSites: [

@@ -1196,6 +1196,11 @@
     keepHistory: true,
     // The notebook project "Save to notebook" adds to.
     notebookProject: "General",
+    // On the page: the Explain button on selected text, reading tracking, and
+    // summarizing skipped sections when you leave a page.
+    explainButton: true,
+    trackReading: true,
+    skippedSummaries: true,
     autoSummarize: true,
     articlesOnly: true,
     excludedSites: [
@@ -17395,6 +17400,9 @@ Please migrate to a newer model. Visit https://docs.anthropic.com/en/docs/resour
     $("articlesOnly").checked = settings.articlesOnly;
     $("excludedSites").value = settings.excludedSites;
     $("keepHistory").checked = settings.keepHistory;
+    $("explainButton").checked = settings.explainButton;
+    $("trackReading").checked = settings.trackReading;
+    $("skippedSummaries").checked = settings.skippedSummaries;
     if (!settings.apiKey) $("apiKey").focus();
     showHistoryCount();
   }
@@ -17424,7 +17432,10 @@ Please migrate to a newer model. Visit https://docs.anthropic.com/en/docs/resour
       autoSummarize: $("autoSummarize").checked,
       articlesOnly: $("articlesOnly").checked,
       excludedSites: $("excludedSites").value.trim(),
-      keepHistory: $("keepHistory").checked
+      keepHistory: $("keepHistory").checked,
+      explainButton: $("explainButton").checked,
+      trackReading: $("trackReading").checked,
+      skippedSummaries: $("skippedSummaries").checked
     });
     if (!apiKey) {
       setStatus("Saved. Add an API key to start summarizing.", true);

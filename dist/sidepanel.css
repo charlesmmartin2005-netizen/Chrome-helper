@@ -557,3 +557,47 @@ button.tabref {
 .sources a {
   color: var(--accent);
 }
+
+.skipped {
+  margin-bottom: 14px;
+  border-left: 3px solid var(--accent);
+}
+
+.skipped-title {
+  font-weight: 600;
+  margin: 0 0 6px !important;
+}
+
+.skipped-title a {
+  color: var(--accent);
+}
+
+.skipped .summary {
+  margin: 6px 0;
+}
+
+.skipped-meta {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 0 0 8px !important;
+}
+
+.onpage {
+  margin: 0 0 10px;
+}
+
+.onpage p {
+  margin: 0;
+}
+
+.onpage button {
+  margin-top: 6px;
+}
+
+button.stamp {
+  padding: 0 6px;
+  font-size: 12px;
+  border-radius: 999px;
+  color: var(--accent);
+  vertical-align: 1px;
+}

@@ -43,5 +43,32 @@ async function onMenuClick(info, tab) {
   }
 }
 chrome.contextMenus.onClicked.addListener(onMenuClick);
+
+// The Explain button a page shows on selected text sends its request here.
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.ps !== "explainSelection" || !sender.tab) return false;
+  (async () => {
+    const { apiKey } = await chrome.storage.local.get("apiKey");
+    if (!apiKey) return sendResponse({ error: "Add your Anthropic API key in the extension's settings first." });
+    await chrome.storage.session.set({
+      pendingSelection: {
+        text: String(message.text ?? "").slice(0, 4000),
+        context: String(message.context ?? "").slice(0, 2500),
+        mode: message.mode,
+        tabId: sender.tab.id,
+        frameId: sender.frameId ?? 0,
+        inPage: true,
+        at: Date.now(),
+      },
+    });
+    try {
+      await chrome.sidePanel.open({ windowId: sender.tab.windowId });
+    } catch (err) {
+      console.warn("Could not open the side panel:", err);
+    }
+    sendResponse({ ok: true });
+  })().catch((err) => sendResponse({ error: err.message }));
+  return true;
+});
 // Lets the test harness trigger a menu click without a real context menu.
 globalThis.__pageSummarizerMenuClick = onMenuClick;
