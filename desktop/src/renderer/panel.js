@@ -206,13 +206,13 @@ function applyOpacity(value) {
 // The title resolves out of glyphs when the panel opens.
 let titleTimer = null;
 function decodeTitle() {
-  const text = "PAGE SUMMARIZER";
+  const text = "ALL-MIND";
   let progress = 0;
   clearInterval(titleTimer);
   titleTimer = setInterval(() => {
     progress += 2;
     tick++;
-    els.titleText.textContent = [...text].map((ch, i) => (i < progress || ch === " " ? ch : glyph(i, tick))).join("");
+    els.titleText.textContent = [...text].map((ch, i) => (i < progress || ch === " " || ch === "-" ? ch : glyph(i, tick))).join("");
     if (progress >= text.length) clearInterval(titleTimer);
   }, 40);
 }

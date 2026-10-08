@@ -75,6 +75,30 @@ export function saveApiKey(key) {
   }
 }
 
+// Earlier product names; their data folders are read once, on first run.
+export const LEGACY_NAMES = ["Page Summarizer"];
+
+// Copies settings.json and api-key.bin from a previous name's data folder
+// when this one is still empty. Returns true when something was copied.
+export function migrateLegacyData() {
+  const target = dir();
+  if (fs.existsSync(settingsFile()) || fs.existsSync(keyFile())) return false;
+  for (const name of LEGACY_NAMES) {
+    const old = path.join(app.getPath("appData"), name);
+    if (path.resolve(old) === path.resolve(target)) continue;
+    const files = ["settings.json", "api-key.bin"].filter((f) => fs.existsSync(path.join(old, f)));
+    if (files.length === 0) continue;
+    try {
+      fs.mkdirSync(target, { recursive: true });
+      for (const f of files) fs.copyFileSync(path.join(old, f), path.join(target, f));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 export function dataFolder() {
   return dir();
 }

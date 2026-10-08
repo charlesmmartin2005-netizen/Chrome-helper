@@ -5,7 +5,7 @@ import { app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, screen, shell,
 import path from "node:path";
 import fs from "node:fs";
 import Anthropic from "@anthropic-ai/sdk";
-import { loadSettings, saveSettings, loadApiKey, saveApiKey, dataFolder } from "./store.js";
+import { loadSettings, saveSettings, loadApiKey, saveApiKey, dataFolder, migrateLegacyData, LEGACY_NAMES } from "./store.js";
 import { captureScreen, captureRegion, listWindows, captureWindow, pickerPaths, isBlank, finishCapture, captureViaStream } from "./capture.js";
 import { summaryParams, answerParams } from "./prompts.js";
 import { MODELS } from "../../src/settings.js";
@@ -25,7 +25,14 @@ const API_BASE = process.env.PS_API_BASE || undefined;
 let panel = null;
 let tray = null;
 let expanded = false;
+// The app used to be called "Page Summarizer": carry its settings and key
+// over the first time this name runs, and move its "start at login" entry.
+const migrated = migrateLegacyData();
 let settings = loadSettings();
+if (migrated && app.isPackaged && process.platform === "win32") {
+  for (const name of LEGACY_NAMES) app.setLoginItemSettings({ openAtLogin: false, name });
+  if (settings.launchAtLogin) app.setLoginItemSettings({ openAtLogin: true, args: ["--hidden"] });
+}
 const hotkeys = { toggle: false, capture: false };
 
 const state = {
@@ -70,7 +77,7 @@ function createPanel() {
     fullscreenable: false,
     hasShadow: false,
     show: false,
-    title: "Page Summarizer",
+    title: "All-Mind",
     icon: path.join(ASSETS, "icon128.png"),
     webPreferences: {
       preload: path.join(DIST, "preload.js"),
@@ -156,7 +163,7 @@ const captureHooks = {
 function createTray() {
   const icon = nativeImage.createFromPath(path.join(ASSETS, "tray.png"));
   tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
-  tray.setToolTip("Page Summarizer");
+  tray.setToolTip("All-Mind");
   tray.on("click", () => togglePanel());
   updateTrayMenu();
 }
@@ -171,7 +178,7 @@ function updateTrayMenu() {
       { label: "Settings", click: () => { showPanel(true); send("command", { name: "settings" }); } },
       { label: "Start when I log in", type: "checkbox", checked: settings.launchAtLogin, click: (item) => applySettings({ launchAtLogin: item.checked }) },
       { type: "separator" },
-      { label: "Quit Page Summarizer", click: () => { app.quitting = true; app.quit(); } },
+      { label: "Quit All-Mind", click: () => { app.quitting = true; app.quit(); } },
     ]),
   );
 }
@@ -413,7 +420,7 @@ function registerIpc() {
     const capture = await captureRegion({ ...captureHooks, ...pickerPaths(DIST) });
     return capture ? addCapture(capture) : null;
   });
-  handle("capture:listWindows", () => listWindows(["Page Summarizer"]));
+  handle("capture:listWindows", () => listWindows(["All-Mind"]));
   handle("capture:window", async (sourceId) => addCapture(await captureWindow(sourceId, captureHooks)));
   handle("capture:remove", (id) => {
     state.captures = state.captures.filter((c) => c.id !== id);

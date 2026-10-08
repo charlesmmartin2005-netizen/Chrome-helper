@@ -27,9 +27,9 @@ Click the toolbar icon to open a side panel. While the panel is open, it follows
 - **Excluded sites**: email and messaging sites are excluded from automatic summaries by default. You can edit the list.
 - **Cost display**: each summary shows its token usage and an estimated cost.
 
-## Desktop app (Windows)
+## All-Mind desktop app (Windows)
 
-The `desktop` folder holds a separate program that works outside Chrome: a small floating button that stays on top of everything. Click it (or press **Ctrl+Shift+Space**) and it opens into a card; **Ctrl+Shift+S** captures the whole screen and summarizes it in one go. It reads the screen as an image, so it works with anything you can see: a PDF in Acrobat, Word, Kindle, slides, a paused video.
+The `desktop` folder holds **All-Mind**, a separate program that works outside Chrome: a small floating button that stays on top of everything. Click it (or press **Ctrl+Shift+Space**) and it opens into a card; **Ctrl+Shift+S** captures the whole screen and summarizes it in one go. It reads the screen as an image, so it works with anything you can see: a PDF in Acrobat, Word, Kindle, slides, a paused video.
 
 - **Screen / Window / Region**: capture the whole screen, pick one window, or drag a rectangle over part of the screen (the screen freezes while you drag).
 - **Long documents**: scroll and capture again; up to 12 screenshots are summarized together as one document.
@@ -40,7 +40,7 @@ The `desktop` folder holds a separate program that works outside Chrome: a small
 
 The browser-only features (automatic summaries as you browse, inline TL;DR chips, reading tracking, the selection popup, YouTube captions, Brightspace files) stay in the extension; use both.
 
-**Install:** download `PageSummarizer-1.1.0-win-x64.zip` from the repository's Releases page, unzip it anywhere (for example a `Page Summarizer` folder in your Documents), and run `Page Summarizer.exe`. It isn't code-signed, so Windows SmartScreen may show "Windows protected your PC": click **More info**, then **Run anyway**. To start it automatically, turn on "Start when I log in" in Settings. On first start the card opens on Settings; paste your API key and click Save.
+**Install:** download `All-Mind-1.2.0-win-x64.zip` from the repository's Releases page, unzip it anywhere (for example an `All-Mind` folder in your Documents), and run `All-Mind.exe`. It isn't code-signed, so Windows SmartScreen may show "Windows protected your PC": click **More info**, then **Run anyway**. To start it automatically, turn on "Start when I log in" in Settings. On first start the card opens on Settings; paste your API key and click Save. If you used it while it was still called Page Summarizer, your key and settings are carried over automatically.
 
 **Build it yourself:** `cd desktop && npm install && npm run pack` produces the zip in `desktop/release` (and a one-click installer when built on Windows, or on Linux with 32-bit Wine). `npm start` runs it from source.
 
