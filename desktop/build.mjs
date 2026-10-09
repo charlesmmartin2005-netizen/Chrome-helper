@@ -11,6 +11,7 @@ await cp("src/renderer/panel.html", "dist/renderer/panel.html");
 await cp("src/renderer/panel.css", "dist/renderer/panel.css");
 await cp("src/renderer/picker.html", "dist/renderer/picker.html");
 await cp("src/renderer/capture.html", "dist/renderer/capture.html");
+await cp("src/renderer/voice-worklet.js", "dist/renderer/voice-worklet.js");
 await cp("assets", "dist/assets", { recursive: true });
 await mkdir("dist/assets/fonts", { recursive: true });
 for (const [pkg, weights] of [["oxanium", [400, 500, 600, 700]], ["jetbrains-mono", [400, 500]]]) {
@@ -25,7 +26,8 @@ const node = {
   platform: "node",
   format: "cjs",
   target: "node20",
-  external: ["electron"],
+  // The speech engine is a native module and stays outside the bundle.
+  external: ["electron", "sherpa-onnx-node"],
   legalComments: "none",
   logLevel: "info",
 };

@@ -3,6 +3,7 @@
 // at most 1568 pixels (what Claude reads best) and stored as JPEG.
 import { BrowserWindow, desktopCapturer, screen, nativeImage, ipcMain, session } from "electron";
 import path from "node:path";
+import { addDisplayMediaHandler, screenVideoHandler } from "./media.js";
 
 const MAX_SIDE = 1568;
 // Screens wider than this are sent as two tiles so small text stays readable.
@@ -34,9 +35,8 @@ export function isBlank(image) {
 // where the first doesn't.
 export async function captureViaStream(source, width, height) {
   const win = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: false } });
-  const handler = (request, callback) => callback({ video: { id: source.id, name: source.name } });
+  const removeHandler = addDisplayMediaHandler(screenVideoHandler("capture.html", source));
   try {
-    win.webContents.session.setDisplayMediaRequestHandler(handler);
     // A file: page is a secure context, which the media API requires.
     await win.loadFile(path.join(__dirname, "renderer", "capture.html"));
     const dataUrl = await win.webContents.executeJavaScript(`(async () => {
@@ -54,7 +54,7 @@ export async function captureViaStream(source, width, height) {
     })()`);
     return nativeImage.createFromDataURL(dataUrl);
   } finally {
-    win.webContents.session.setDisplayMediaRequestHandler(null);
+    removeHandler();
     win.destroy();
   }
 }

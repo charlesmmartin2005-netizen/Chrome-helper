@@ -18,7 +18,13 @@ export const DEFAULTS = {
   hotkeyCapture: "CommandOrControl+Shift+S",
   // How see-through the overlay's panel is (0.4–1).
   opacity: 0.92,
+  // Voice: wake words on the microphone, which speech model, spoken answers.
+  voiceActivation: true,
+  voiceModel: "moonshine-base",
+  voiceSpeak: true,
 };
+
+const VOICE_MODEL_KEYS = ["moonshine-tiny", "moonshine-base"];
 
 const dir = () => app.getPath("userData");
 const settingsFile = () => path.join(dir(), "settings.json");
@@ -38,6 +44,9 @@ export function loadSettings() {
   settings.focus = String(settings.focus ?? "").trim().slice(0, 500);
   const opacity = Number(settings.opacity);
   settings.opacity = Number.isFinite(opacity) ? Math.min(1, Math.max(0.4, opacity)) : DEFAULTS.opacity;
+  if (!VOICE_MODEL_KEYS.includes(settings.voiceModel)) settings.voiceModel = DEFAULTS.voiceModel;
+  settings.voiceActivation = Boolean(settings.voiceActivation);
+  settings.voiceSpeak = Boolean(settings.voiceSpeak);
   return settings;
 }
 

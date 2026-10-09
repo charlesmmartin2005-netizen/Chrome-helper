@@ -7,8 +7,11 @@ import fs from "node:fs";
 import Anthropic from "@anthropic-ai/sdk";
 import { loadSettings, saveSettings, loadApiKey, saveApiKey, dataFolder, migrateLegacyData, LEGACY_NAMES } from "./store.js";
 import { captureScreen, captureRegion, listWindows, captureWindow, pickerPaths, isBlank, finishCapture, captureViaStream, nextCaptureId } from "./capture.js";
-import { summaryParams, answerParams } from "./prompts.js";
 import { pickFiles, readLocalFile, downloadFile, makeAttachment, textAttachment } from "./files.js";
+import { VoiceEngine, VOICE_MODELS, modelReady, downloadModel } from "./voice.js";
+import { parseCommand, COMMANDS } from "./voice-commands.js";
+import { installDisplayMediaHandler, addDisplayMediaHandler, loopbackAudioHandler } from "./media.js";
+import { summaryParams, answerParams, dialogParams, notesParams } from "./prompts.js";
 import { MODELS } from "../../src/settings.js";
 import { estimateCost, describeError } from "../../src/summarize.js";
 
@@ -86,6 +89,8 @@ function createPanel() {
       nodeIntegration: false,
       sandbox: false,
       spellcheck: false,
+      // Wake-word listening keeps running while the overlay is hidden.
+      backgroundThrottling: false,
     },
   });
   panel.setAlwaysOnTop(true, "screen-saver");
@@ -179,6 +184,11 @@ function updateTrayMenu() {
       { label: "Settings", click: () => { showPanel(true); send("command", { name: "settings" }); } },
       { label: "Start when I log in", type: "checkbox", checked: settings.launchAtLogin, click: (item) => applySettings({ launchAtLogin: item.checked }) },
       { type: "separator" },
+      { label: voice.mode === "socrates" ? "Stop Socrates (voice dialog)" : "Voice: Socrates — talk about what it has read", click: () => { setVoice({ mode: voice.mode === "socrates" ? "off" : "socrates" }); showPanel(true); } },
+      { label: voice.mode === "scribe" ? "Stop Scribe (notes)" : "Voice: Scribe — take notes of what it hears", click: () => { setVoice({ mode: voice.mode === "scribe" ? "off" : "scribe" }); showPanel(true); } },
+      { label: "Listen in (the computer's audio)", type: "checkbox", checked: voice.source === "in", click: (item) => setVoice({ source: item.checked ? "in" : "out" }) },
+      { label: "Wake words (“All-Mind, hello”)", type: "checkbox", checked: settings.voiceActivation, click: (item) => applySettings({ voiceActivation: item.checked }) },
+      { type: "separator" },
       { label: "Quit All-Mind", click: () => { app.quitting = true; app.quit(); } },
     ]),
   );
@@ -208,13 +218,21 @@ function applySettings(changes) {
     app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin, args: ["--hidden"] });
   }
   if ("hotkeyToggle" in changes || "hotkeyCapture" in changes) registerHotkeys();
+  if ("voiceModel" in changes && voice.engine?.modelKey !== settings.voiceModel) {
+    voice.engine?.dispose();
+    voice.engine = null;
+    voice.engineState = "none";
+    ensureVoiceEngine();
+  }
+  if ("voiceActivation" in changes && settings.voiceActivation) ensureVoiceEngine();
+  if (["voiceActivation", "voiceSpeak", "voiceModel"].some((key) => key in changes)) pushVoiceState();
   updateTrayMenu();
   send("settings:changed", publicSettings());
   return publicSettings();
 }
 
 function publicSettings() {
-  return { ...settings, hasKey: Boolean(loadApiKey()), hotkeys: { ...hotkeys }, version: app.getVersion(), platform: process.platform };
+  return { ...settings, hasKey: Boolean(loadApiKey()), hotkeys: { ...hotkeys }, version: app.getVersion(), platform: process.platform, voiceModels: Object.fromEntries(Object.entries(VOICE_MODELS).map(([k, v]) => [k, v.label])) };
 }
 
 // ---------------------------------------------------------------- captures
@@ -289,7 +307,266 @@ function resetState() {
   state.captures = [];
   state.summary = null;
   state.chat = [];
+  voice.transcript = [];
+  voice.newChars = 0;
+  voice.notesAt = 0;
   send("state:reset", {});
+  pushVoiceState();
+}
+
+// ---------------------------------------------------------------- voice
+
+const voice = {
+  mode: "off", // "off" | "socrates" (dialog) | "scribe" (notes)
+  source: "out", // "out" = the microphone, "in" = what the computer is playing
+  scribeSource: "out",
+  scribeUntil: 0,
+  speaking: false,
+  engine: null,
+  engineState: "none", // none | missing | downloading | loading | ready | error
+  progress: null,
+  error: null,
+  transcript: [], // { at, t, text, source }
+  newChars: 0,
+  notesAt: 0,
+  pendingQuestion: null, // said while an answer was still streaming
+};
+
+const engineReady = () => voice.engineState === "ready" && Boolean(voice.engine);
+
+// Which audio the page should be capturing right now.
+function wantedCapture() {
+  const ready = engineReady();
+  return {
+    out: ready && (Boolean(settings.voiceActivation) || (voice.mode !== "off" && voice.source === "out")),
+    in: ready && voice.mode !== "off" && voice.source === "in",
+  };
+}
+
+function voiceState() {
+  return {
+    mode: voice.mode,
+    source: voice.source,
+    ears: Boolean(settings.voiceActivation),
+    speak: Boolean(settings.voiceSpeak),
+    speaking: voice.speaking,
+    engine: voice.engineState,
+    progress: voice.progress,
+    error: voice.error,
+    model: settings.voiceModel,
+    modelLabel: VOICE_MODELS[settings.voiceModel]?.label ?? settings.voiceModel,
+    modelReady: modelReady(settings.voiceModel),
+    capture: wantedCapture(),
+    transcript: voice.transcript.length,
+    loopback: process.platform === "win32",
+    commands: Object.fromEntries(Object.entries(COMMANDS).map(([k, v]) => [k, v.label])),
+  };
+}
+
+function pushVoiceState() {
+  send("voice:state", voiceState());
+  updateTrayMenu();
+}
+
+// Loads the speech engine, downloading the model first when asked to.
+async function ensureVoiceEngine({ download = false } = {}) {
+  if (engineReady() && voice.engine.modelKey === settings.voiceModel) return true;
+  if (voice.engineState === "downloading" || voice.engineState === "loading") return false;
+  if (!modelReady(settings.voiceModel)) {
+    if (!download) {
+      voice.engineState = "missing";
+      pushVoiceState();
+      return false;
+    }
+    voice.engineState = "downloading";
+    voice.error = null;
+    voice.progress = { phase: "download", received: 0, total: VOICE_MODELS[settings.voiceModel].bytes };
+    pushVoiceState();
+    try {
+      await downloadModel(settings.voiceModel, (progress) => {
+        voice.progress = progress;
+        send("voice:state", voiceState());
+      });
+    } catch (err) {
+      voice.engineState = "error";
+      voice.error = `The speech model download failed: ${err.message}`;
+      voice.progress = null;
+      pushVoiceState();
+      return false;
+    }
+  }
+  voice.engineState = "loading";
+  voice.progress = null;
+  pushVoiceState();
+  try {
+    voice.engine?.dispose();
+    const engine = new VoiceEngine(settings.voiceModel);
+    engine.on("transcript", onTranscript);
+    engine.on("error", (err) => {
+      voice.error = `Speech recognition error: ${err.message}`;
+      pushVoiceState();
+    });
+    await engine.load();
+    voice.engine = engine;
+    voice.engineState = "ready";
+    voice.error = null;
+  } catch (err) {
+    voice.engine = null;
+    voice.engineState = "error";
+    voice.error = `The speech engine couldn't start: ${err.message}`;
+  }
+  pushVoiceState();
+  return engineReady();
+}
+
+function setVoice({ mode, source } = {}) {
+  const wasMode = voice.mode;
+  if (source === "in" || source === "out") voice.source = source;
+  if (mode === "off" || mode === "socrates" || mode === "scribe") voice.mode = mode;
+  if (voice.mode === "scribe" && wasMode !== "scribe") voice.scribeSource = voice.source;
+  if (voice.mode === "scribe" && (source === "in" || source === "out")) voice.scribeSource = voice.source;
+  if (voice.mode !== "off" && !engineReady()) ensureVoiceEngine({ download: true });
+  if (wasMode === "scribe" && voice.mode !== "scribe") {
+    // A last utterance may still be decoding; keep taking it for a moment,
+    // then write the final notes.
+    voice.scribeUntil = Date.now() + 2500;
+    setTimeout(() => {
+      if (voice.newChars > 0 && !state.run) runNotes().catch(() => {});
+    }, 2800);
+  }
+  if (voice.mode !== "socrates") voice.pendingQuestion = null;
+  if (voice.mode === "off" && wasMode !== "off") voice.source = "out"; // the next session starts listening out
+  pushVoiceState();
+  return voiceState();
+}
+
+function onTranscript({ source, text, at = Date.now() }) {
+  if (source === "out") {
+    const command = parseCommand(text);
+    if (command) return runVoiceCommand(command);
+  }
+  send("voice:heard", { source, text, at });
+  if (voice.speaking) return;
+  const scribing = voice.mode === "scribe" || Date.now() < voice.scribeUntil;
+  if (scribing && source === voice.scribeSource) return addTranscript({ text, source, at });
+  if (voice.mode === "socrates" && source === voice.source) voiceAsk(text);
+}
+
+function runVoiceCommand(command) {
+  send("voice:command", { command });
+  switch (command) {
+    case "wake":
+      showPanel(true);
+      break;
+    case "socrates":
+      setVoice({ mode: "socrates" });
+      showPanel(true);
+      break;
+    case "scribe":
+      setVoice({ mode: "scribe" });
+      showPanel(true);
+      break;
+    case "listenIn":
+      setVoice({ source: "in" });
+      break;
+    case "listenOut":
+      setVoice({ source: "out" });
+      break;
+    case "stop":
+      setVoice({ mode: "off" });
+      break;
+  }
+  if (settings.voiceSpeak) send("voice:say", { text: COMMANDS[command].say });
+}
+
+function voiceAsk(text) {
+  if (state.run) {
+    // Still answering the last one: the newest thing said is asked next.
+    voice.pendingQuestion = text;
+    return;
+  }
+  voice.pendingQuestion = null;
+  runAnswer({ question: text, label: "voice", voice: true }).catch((err) => {
+    send("ai:stream", { kind: "answer", type: "error", error: friendlyError(err) });
+  });
+}
+
+function askPendingQuestion() {
+  const next = voice.pendingQuestion;
+  voice.pendingQuestion = null;
+  if (next && voice.mode === "socrates" && !state.run) voiceAsk(next);
+}
+
+function addTranscript({ text, source, at }) {
+  const first = voice.transcript[0]?.at ?? at;
+  const entry = { at, t: at - first, text, source };
+  voice.transcript.push(entry);
+  voice.newChars += text.length;
+  send("voice:transcript", entry);
+  if (!state.run && voice.newChars >= 300 && Date.now() - voice.notesAt > 60_000) runNotes().catch(() => {});
+}
+
+function transcriptText() {
+  const stamp = (ms) => {
+    const s = Math.floor(ms / 1000);
+    return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+  };
+  return voice.transcript.map((e) => `[${stamp(e.t)}] ${e.text}`).join("\n");
+}
+
+// Notes on everything heard so far, replacing the previous notes. The
+// transcript rides along as an item so questions can quote it.
+async function runNotes() {
+  if (!voice.transcript.length) throw new Error("Nothing has been heard yet.");
+  stopRun();
+  const id = ++runCounter;
+  const text = transcriptText();
+  const existing = state.captures.find((c) => c.kind === "transcript");
+  const item = { ...textAttachment({ name: "Transcript", size: text.length, source: "voice", kind: "transcript", text }), id: existing?.id ?? nextCaptureId(), label: "the transcript of what All-Mind heard" };
+  if (existing) state.captures[state.captures.indexOf(existing)] = item;
+  else state.captures.push(item);
+  send("capture:added", publicCapture(item));
+  const params = notesParams({
+    model: settings.model,
+    length: settings.length,
+    style: settings.style,
+    focus: settings.focus,
+    transcript: text,
+    previous: state.summary?.notes ? state.summary.text : "",
+  });
+  const stream = client().beta.messages.stream(params);
+  state.run = { id, kind: "summary", stream };
+  voice.notesAt = Date.now();
+  voice.newChars = 0;
+  send("ai:stream", { kind: "summary", type: "start", runId: id, captures: readyItems().length, what: "the transcript", notes: true });
+  let out = "";
+  stream.on("text", (delta) => {
+    out += delta;
+    if (state.run?.id === id) send("ai:stream", { kind: "summary", type: "delta", runId: id, text: out });
+  });
+  try {
+    const message = await stream.finalMessage();
+    if (state.run?.id !== id) return;
+    if (message.stop_reason === "refusal") throw new Error("Claude declined to take notes on this.");
+    state.summary = {
+      text: message.content.filter((b) => b.type === "text").map((b) => b.text).join("").trim(),
+      model: message.model,
+      usage: { input: message.usage.input_tokens, output: message.usage.output_tokens },
+      cost: estimateCost(message),
+      cutOff: message.stop_reason === "max_tokens",
+      createdAt: Date.now(),
+      notes: true,
+    };
+    send("ai:stream", { kind: "summary", type: "done", runId: id, summary: state.summary });
+  } catch (err) {
+    if (state.run?.id !== id) return;
+    if (err.name !== "AbortError") send("ai:stream", { kind: "summary", type: "error", runId: id, error: friendlyError(err) });
+    else send("ai:stream", { kind: "summary", type: "stopped", runId: id });
+  } finally {
+    if (state.run?.id === id) state.run = null;
+    askPendingQuestion();
+  }
+  return { runId: id };
 }
 
 // ---------------------------------------------------------------- Claude
@@ -353,26 +630,31 @@ async function runSummary() {
     } else send("ai:stream", { kind: "summary", type: "stopped", runId: id });
   } finally {
     if (state.run?.id === id) state.run = null;
+    askPendingQuestion();
   }
   return { runId: id };
 }
 
-async function runAnswer({ question, label = null, structured = false }) {
-  if (!state.summary) throw new Error("Summarize the screen first.");
+async function runAnswer({ question, label = null, structured = false, voice: spoken = false }) {
+  if (!state.summary && !spoken) throw new Error("Summarize the screen first.");
   stopRun();
   const id = ++runCounter;
-  const params = answerParams({
-    model: settings.model,
-    focus: settings.focus,
-    captures: readyItems(),
-    summary: state.summary.text,
-    history: state.chat.map(({ q, a }) => ({ q, a })),
-    question,
-    structured,
-  });
+  const history = state.chat.map(({ q, a }) => ({ q, a }));
+  const params = state.summary
+    ? answerParams({
+        model: settings.model,
+        focus: settings.focus,
+        captures: readyItems(),
+        summary: state.summary.text,
+        history,
+        question,
+        structured,
+        voice: spoken,
+      })
+    : dialogParams({ model: settings.model, focus: settings.focus, history, question, voice: spoken });
   const stream = client().beta.messages.stream(params);
   state.run = { id, kind: "answer", stream };
-  send("ai:stream", { kind: "answer", type: "start", runId: id, q: question, label });
+  send("ai:stream", { kind: "answer", type: "start", runId: id, q: question, label, voice: spoken });
   let text = "";
   if (!structured) {
     stream.on("text", (delta) => {
@@ -398,7 +680,7 @@ async function runAnswer({ question, label = null, structured = false }) {
       turn.a = cards.map((c) => `**Q:** ${c.front}\n**A:** ${c.back}`).join("\n\n");
     }
     state.chat.push(turn);
-    send("ai:stream", { kind: "answer", type: "done", runId: id, turn });
+    send("ai:stream", { kind: "answer", type: "done", runId: id, turn, voice: spoken });
   } catch (err) {
     if (state.run?.id !== id) return;
     if (!(err instanceof Anthropic.APIUserAbortError)) {
@@ -406,6 +688,7 @@ async function runAnswer({ question, label = null, structured = false }) {
     } else send("ai:stream", { kind: "answer", type: "stopped", runId: id });
   } finally {
     if (state.run?.id === id) state.run = null;
+    askPendingQuestion();
   }
   return { runId: id };
 }
@@ -438,7 +721,7 @@ function friendlyError(err) {
 function registerIpc() {
   handle("settings:get", () => publicSettings());
   handle("settings:save", (changes) => {
-    const allowed = ["model", "length", "style", "focus", "launchAtLogin", "hotkeyToggle", "hotkeyCapture", "opacity"];
+    const allowed = ["model", "length", "style", "focus", "launchAtLogin", "hotkeyToggle", "hotkeyCapture", "opacity", "voiceActivation", "voiceSpeak", "voiceModel"];
     const clean = Object.fromEntries(Object.entries(changes ?? {}).filter(([k]) => allowed.includes(k)));
     if (clean.model && !MODELS[clean.model]) delete clean.model;
     return applySettings(clean);
@@ -488,8 +771,34 @@ function registerIpc() {
     chat: state.chat,
     busy: state.run?.kind ?? null,
     expanded,
+    voice: voiceState(),
   }));
   handle("state:reset", () => resetState());
+
+  handle("voice:get", () => voiceState());
+  handle("voice:set", (payload) => setVoice(payload ?? {}));
+  handle("voice:download", async () => {
+    await ensureVoiceEngine({ download: true });
+    if (voice.engineState === "error") throw new Error(voice.error);
+    return voiceState();
+  });
+  handle("voice:speaking", (on) => {
+    voice.speaking = Boolean(on);
+    send("voice:state", voiceState());
+  });
+  handle("voice:notes", () => runNotes());
+  handle("voice:transcript", () => ({ entries: voice.transcript, text: transcriptText() }));
+  handle("voice:clear", () => {
+    voice.transcript = [];
+    voice.newChars = 0;
+    pushVoiceState();
+  });
+  handle("voice:captureStopped", (source) => voice.engine?.flush(source));
+  // Audio arrives ten times a second; it is handed straight to the detector.
+  ipcMain.on("voice:audio", (_event, { source, samples } = {}) => {
+    if (!engineReady() || !(source === "in" || source === "out") || !wantedCapture()[source]) return;
+    voice.engine.feed(source, samples instanceof Float32Array ? samples : new Float32Array(samples));
+  });
 
   handle("ai:summarize", () => runSummary());
   handle("ai:ask", (payload) => runAnswer(payload ?? {}));
@@ -520,10 +829,14 @@ if (!gotLock) {
 } else {
   app.on("second-instance", () => showPanel(true));
   app.whenReady().then(() => {
+    installDisplayMediaHandler();
+    addDisplayMediaHandler(loopbackAudioHandler("panel.html"));
     registerIpc();
     createPanel();
     createTray();
     registerHotkeys();
+    // Wake words need the speech engine; it loads if the model is already here.
+    ensureVoiceEngine();
     if (process.platform === "darwin") app.dock?.hide();
   });
   app.on("window-all-closed", (event) => event?.preventDefault?.());
@@ -536,4 +849,12 @@ if (!gotLock) {
 }
 
 // Exposed for the test harness (Playwright drives the main process).
-globalThis.__ps = { state, setExpanded, captureAndSummarize, togglePanel, getPanel: () => panel, test: { isBlank, finishCapture, captureViaStream } };
+globalThis.__ps = {
+  state,
+  setExpanded,
+  captureAndSummarize,
+  togglePanel,
+  getPanel: () => panel,
+  test: { isBlank, finishCapture, captureViaStream },
+  voice: { state: voiceState, set: setVoice, hear: (text, source = "out") => onTranscript({ source, text, at: Date.now() }), ensure: ensureVoiceEngine, engine: () => voice.engine, transcript: () => voice.transcript },
+};

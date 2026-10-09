@@ -1,7 +1,7 @@
 {
   "name": "all-mind-desktop",
   "productName": "All-Mind",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "description": "Summarizes whatever is on your screen, in a floating overlay, using Claude.",
   "main": "dist/main.js",
@@ -20,7 +20,10 @@
     "files": [
       "dist/**/*",
       "assets/**/*",
-      "package.json"
+      "package.json",
+      "!node_modules/sherpa-onnx-linux-*/**",
+      "!node_modules/sherpa-onnx-darwin-*/**",
+      "!node_modules/sherpa-onnx-win-ia32/**"
     ],
     "asar": true,
     "win": {
@@ -54,7 +57,13 @@
         "dir"
       ]
     },
-    "forceCodeSigning": false
+    "forceCodeSigning": false,
+    "asarUnpack": [
+      "node_modules/sherpa-onnx-node/**",
+      "node_modules/sherpa-onnx-win-x64/**"
+    ],
+    "npmRebuild": false,
+    "nodeGypRebuild": false
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.131.0",
@@ -64,5 +73,10 @@
     "electron-builder": "^26.15.3",
     "esbuild": "^0.28.2",
     "fflate": "^0.8.3"
+  },
+  "dependencies": {
+    "sherpa-onnx-node": "^1.13.8",
+    "tar": "^7.5.22",
+    "unbzip2-stream": "^1.4.3"
   }
 }

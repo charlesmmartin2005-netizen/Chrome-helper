@@ -4,6 +4,7 @@ import { renderMarkdown } from "../../../src/markdown.js";
 import { MODELS, STYLES, LENGTHS } from "../../../src/settings.js";
 import { TOOLS } from "../../../src/summarize.js";
 import { readDocument } from "../../../src/documents.js";
+import { AudioSource } from "./voice-capture.js";
 
 const $ = (id) => document.getElementById(id);
 const els = Object.fromEntries(
@@ -11,6 +12,9 @@ const els = Object.fromEntries(
     "pill", "card", "new", "settings-button", "collapse", "main-view", "settings-view",
     "cap-screen", "cap-window", "cap-region", "cap-file", "cap-link", "link-row", "link-input", "link-cancel", "drop-hint",
     "summarize", "windows", "windows-list", "windows-cancel",
+    "voice-ears", "voice-socrates", "voice-scribe", "voice-in", "voice-out", "voice-stop", "voice-status", "voice-status-text", "voice-download",
+    "transcript", "transcript-log", "notes-now", "transcript-copy", "transcript-save", "transcript-clear",
+    "voiceActivation", "voiceSpeak", "voiceModel", "voice-model-status", "voice-model-download",
     "captures", "captures-hint", "status", "status-text", "notice", "notice-text", "notice-action", "empty",
     "result", "style", "copy", "listen", "summary", "meta", "chat-log", "tools", "ask-form", "ask-input", "ask-send",
     "apiKey", "saveKey", "keyStatus", "model", "length", "focus", "launchAtLogin", "hk-toggle", "hk-capture",
@@ -76,6 +80,7 @@ async function init() {
     addFiles("loadFiles", { url });
   });
   setupDropZone();
+  setupVoice();
   els.style.addEventListener("change", async () => {
     settings = await call("saveSettings", { style: els.style.value });
     if (state.summary && !busyKind) summarize();
@@ -169,6 +174,17 @@ function applySettingsToUi() {
   els.length.value = settings.length;
   els.focus.value = settings.focus;
   els.launchAtLogin.checked = settings.launchAtLogin;
+  els.voiceActivation.checked = Boolean(settings.voiceActivation);
+  els.voiceSpeak.checked = Boolean(settings.voiceSpeak);
+  if (!els.voiceModel.options.length) {
+    for (const [key, label] of Object.entries(settings.voiceModels ?? {})) {
+      const option = document.createElement("option");
+      option.value = key;
+      option.textContent = label;
+      els.voiceModel.append(option);
+    }
+  }
+  els.voiceModel.value = settings.voiceModel ?? "";
   els.style.value = settings.style;
   els.opacity.value = String(Math.round((settings.opacity ?? 0.92) * 100));
   applyOpacity(settings.opacity ?? 0.92);
@@ -418,7 +434,7 @@ function setupDropZone() {
   });
 }
 
-const EXT_BADGES = { pdf: "PDF", docx: "DOCX", pptx: "PPTX", text: "TXT", image: "IMG", office: "…" };
+const EXT_BADGES = { pdf: "PDF", docx: "DOCX", pptx: "PPTX", text: "TXT", image: "IMG", office: "…", transcript: "REC" };
 
 function itemDetails(c) {
   if (c.type !== "file") return `${c.label} · ${c.width}×${c.height}${c.tiles > 1 ? `, sent as ${c.tiles} images` : ""}`;
@@ -538,12 +554,14 @@ function onSummaryEvent(event) {
       stopListening();
       busyKind = "summary";
       state.summary = null;
-      state.chat = [];
+      if (!event.notes) {
+        state.chat = [];
+        els.chatLog.replaceChildren();
+      }
       els.empty.hidden = true;
       els.notice.hidden = true;
       els.result.hidden = true;
       els.summary.innerHTML = "";
-      els.chatLog.replaceChildren();
       els.meta.textContent = "";
       els.statusText.textContent = `Reading ${event.what ?? (event.captures > 1 ? `${event.captures} captures` : "the capture")} with ${MODELS[settings.model]?.shortLabel ?? settings.model}…`;
       els.status.hidden = false;
@@ -623,6 +641,7 @@ function onAnswerEvent(event) {
       setSysStatus("SYS READY");
       segments("done");
       scrollToBottom();
+      if (event.voice && event.turn?.a) say(spokenText(event.turn.a));
       break;
     case "error":
     case "stopped":
@@ -646,8 +665,9 @@ function onAnswerEvent(event) {
 
 function appendExchange(turn) {
   const questionEl = document.createElement("div");
-  questionEl.className = "msg user";
-  questionEl.textContent = turn.label ?? turn.q;
+  // Tool buttons show their label; spoken questions show what was said.
+  questionEl.className = turn.label === "voice" ? "msg user voice" : "msg user";
+  questionEl.textContent = turn.label && turn.label !== "voice" ? turn.label : turn.q;
   const answerEl = document.createElement("div");
   answerEl.className = "msg assistant";
   if (turn.a != null) renderAnswer(answerEl, turn);
@@ -863,5 +883,205 @@ async function saveKey() {
 
 init().catch((err) => showNotice(`Something went wrong: ${err.message}`));
 
+// ---------------------------------------------------------------- voice
+
+let voice = null; // the main process's view: mode, source, engine, capture...
+const audio = { out: null, in: null }; // running AudioSource per kind
+const audioBusy = { out: null, in: null };
+
+function setupVoice() {
+  for (const button of [els.voiceEars, els.voiceSocrates, els.voiceScribe, els.voiceIn, els.voiceOut, els.voiceStop]) {
+    button.addEventListener("click", () => {
+      audioFailed.out = false;
+      audioFailed.in = false;
+    });
+  }
+  els.voiceEars.addEventListener("click", async () => {
+    settings = await call("saveSettings", { voiceActivation: !settings.voiceActivation });
+    applySettingsToUi();
+  });
+  els.voiceSocrates.addEventListener("click", () => call("voiceSet", { mode: voice?.mode === "socrates" ? "off" : "socrates" }).catch((err) => showNotice(err.message)));
+  els.voiceScribe.addEventListener("click", () => call("voiceSet", { mode: voice?.mode === "scribe" ? "off" : "scribe" }).catch((err) => showNotice(err.message)));
+  els.voiceIn.addEventListener("click", () => call("voiceSet", { source: "in" }).catch((err) => showNotice(err.message)));
+  els.voiceOut.addEventListener("click", () => call("voiceSet", { source: "out" }).catch((err) => showNotice(err.message)));
+  els.voiceStop.addEventListener("click", () => call("voiceSet", { mode: "off" }).catch((err) => showNotice(err.message)));
+  for (const button of [els.voiceDownload, els.voiceModelDownload]) {
+    button.addEventListener("click", () => {
+      els.notice.hidden = true;
+      call("voiceDownload").catch((err) => showNotice(err.message));
+    });
+  }
+  els.notesNow.addEventListener("click", () => {
+    els.notice.hidden = true;
+    call("voiceNotes").catch((err) => showNotice(err.message));
+  });
+  els.transcriptCopy.addEventListener("click", async () => {
+    const { text } = await call("voiceTranscript");
+    try {
+      await navigator.clipboard.writeText(text);
+      els.transcriptCopy.textContent = "Copied";
+      setTimeout(() => (els.transcriptCopy.textContent = "Copy"), 1500);
+    } catch {
+      showNotice("Couldn't copy the transcript.");
+    }
+  });
+  els.transcriptSave.addEventListener("click", async () => {
+    const { text } = await call("voiceTranscript");
+    call("saveTextFile", { name: `All-Mind transcript ${new Date().toISOString().slice(0, 16).replace("T", " ").replace(":", ".")}.txt`, text: text + "\n" }).catch((err) => showNotice(err.message));
+  });
+  els.transcriptClear.addEventListener("click", async () => {
+    await call("voiceClear");
+    els.transcriptLog.replaceChildren();
+    els.transcript.hidden = voice?.mode !== "scribe";
+  });
+  els.voiceActivation.addEventListener("change", async () => {
+    settings = await call("saveSettings", { voiceActivation: els.voiceActivation.checked });
+    applySettingsToUi();
+  });
+  els.voiceSpeak.addEventListener("change", async () => {
+    settings = await call("saveSettings", { voiceSpeak: els.voiceSpeak.checked });
+    applySettingsToUi();
+  });
+  els.voiceModel.addEventListener("change", async () => {
+    settings = await call("saveSettings", { voiceModel: els.voiceModel.value });
+    applySettingsToUi();
+  });
+  window.desktop.onVoiceState(applyVoiceState);
+  window.desktop.onVoiceTranscript(addTranscriptLine);
+  window.desktop.onVoiceHeard(({ source, text }) => {
+    if (voice?.mode === "socrates") setVoiceStatus(`heard (${source === "in" ? "computer" : "mic"}): ${text.length > 70 ? `${text.slice(0, 70)}…` : text}`, "live");
+  });
+  window.desktop.onVoiceSay(({ text }) => say(text));
+  window.desktop.onVoiceCommand(({ command }) => {
+    setVoiceStatus(`command: ${command}`, "live");
+    els.notice.hidden = true;
+  });
+  call("voiceGet").then(applyVoiceState).catch(() => {});
+}
+
+function applyVoiceState(next) {
+  voice = next;
+  const on = (el, flag) => el.classList.toggle("on", Boolean(flag));
+  on(els.voiceEars, next.ears);
+  on(els.voiceSocrates, next.mode === "socrates");
+  on(els.voiceScribe, next.mode === "scribe");
+  on(els.voiceIn, next.source === "in");
+  on(els.voiceOut, next.source === "out");
+  els.voiceEars.classList.toggle("live", next.ears && next.capture.out);
+  els.voiceSocrates.classList.toggle("live", next.mode === "socrates" && (next.capture.out || next.capture.in));
+  els.voiceScribe.classList.toggle("live", next.mode === "scribe" && (next.capture.out || next.capture.in));
+  els.voiceStop.hidden = next.mode === "off";
+  els.transcript.hidden = next.mode !== "scribe" && next.transcript === 0;
+  els.voiceDownload.hidden = !(next.engine === "missing" || next.engine === "error");
+  const pct = next.progress?.total ? Math.min(100, Math.round((next.progress.received / next.progress.total) * 100)) : 0;
+  if (next.engine === "downloading") setVoiceStatus(`downloading speech model · ${pct}% of ${Math.round((next.progress?.total ?? 0) / 1048576)} MB (once)`, "live");
+  else if (next.engine === "loading") setVoiceStatus("loading speech model…", "live");
+  else if (next.engine === "error") setVoiceStatus(next.error ?? "speech engine error", "fault");
+  else if (next.engine === "missing") setVoiceStatus(`voice needs the speech model (${next.modelLabel.split("(")[1]?.replace(")", "") ?? "download"}, once) ›`, "");
+  else if (next.engine === "ready") {
+    const where = next.source === "in" ? "listening in (computer audio)" : "listening out (microphone)";
+    if (next.speaking) setVoiceStatus("speaking…", "live");
+    else if (next.mode === "socrates") setVoiceStatus(`socrates · ${where} · ask away`, "live");
+    else if (next.mode === "scribe") setVoiceStatus(`scribe · ${where} · taking notes`, "live");
+    else if (next.ears) setVoiceStatus("wake words on · say “all-mind, hello”", "");
+    else setVoiceStatus("voice ready · wake words off", "");
+  } else els.voiceStatus.hidden = true;
+  // Settings view
+  els.voiceModelStatus.textContent =
+    next.engine === "downloading" ? `Downloading… ${pct}%` : next.engine === "loading" ? "Loading…" : next.engine === "error" ? next.error : next.modelReady ? "Downloaded and ready." : "Not downloaded yet.";
+  els.voiceModelDownload.hidden = next.modelReady || next.engine === "downloading" || next.engine === "loading";
+  if (!next.loopback && next.source === "in") showNotice("Listening in to the computer's audio works on Windows; on this system only the microphone is available.");
+  syncCapture(next.capture);
+}
+
+function setVoiceStatus(text, kind = "") {
+  els.voiceStatus.hidden = false;
+  els.voiceStatusText.textContent = text;
+  els.voiceStatusText.className = kind;
+}
+
+// Opens and closes the microphone / computer-audio streams to match what
+// the main process wants captured. A stream that failed to open is not
+// retried until something changes (the wanted state, or a voice button),
+// so a persistent failure can't turn into a retry loop.
+const audioFailed = { out: false, in: false };
+function syncCapture(wanted) {
+  for (const kind of ["out", "in"]) {
+    const want = Boolean(wanted?.[kind]);
+    if (!want) audioFailed[kind] = false;
+    if (want && !audio[kind] && !audioBusy[kind] && !audioFailed[kind]) {
+      const source = new AudioSource(kind, (chunk) => window.desktop.sendAudio(kind, chunk));
+      audio[kind] = source;
+      source.onEnded = () => {
+        if (audio[kind] === source) {
+          audio[kind] = null;
+          call("voiceCaptureStopped", kind).catch(() => {});
+          if (kind === "in") call("voiceSet", { source: "out" }).catch(() => {});
+        }
+      };
+      audioBusy[kind] = source
+        .start()
+        .catch((err) => {
+          if (audio[kind] === source) audio[kind] = null;
+          audioFailed[kind] = true;
+          showNotice(err.message);
+          setVoiceStatus(err.message, "fault");
+          if (kind === "in") call("voiceSet", { source: "out" }).catch(() => {});
+          else if (voice?.mode !== "off") call("voiceSet", { mode: "off" }).catch(() => {});
+        })
+        .finally(() => {
+          audioBusy[kind] = null;
+          // The wanted state may have changed while the stream was opening.
+          if (voice && !audioFailed[kind] && Boolean(voice.capture?.[kind]) !== Boolean(audio[kind])) syncCapture(voice.capture);
+        });
+    } else if (!want && audio[kind] && !audioBusy[kind]) {
+      const source = audio[kind];
+      audio[kind] = null;
+      audioBusy[kind] = source
+        .stop()
+        .then(() => call("voiceCaptureStopped", kind))
+        .catch(() => {})
+        .finally(() => {
+          audioBusy[kind] = null;
+          if (voice && Boolean(voice.capture?.[kind]) !== Boolean(audio[kind])) syncCapture(voice.capture);
+        });
+    }
+  }
+}
+
+function addTranscriptLine(entry) {
+  const p = document.createElement("p");
+  if (entry.source === "in") p.classList.add("in");
+  const time = document.createElement("time");
+  const s = Math.floor((entry.t ?? 0) / 1000);
+  time.textContent = `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+  p.append(time, document.createTextNode(entry.text));
+  els.transcriptLog.append(p);
+  els.transcript.hidden = false;
+  els.transcriptLog.scrollTop = els.transcriptLog.scrollHeight;
+}
+
+// Spoken confirmations and answers. The main process ignores what it hears
+// while this is speaking so it doesn't answer itself.
+let saying = null;
+function say(text) {
+  if (!("speechSynthesis" in window) || !voice?.speak || !text) return;
+  speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = 1.05;
+  saying = utterance;
+  const done = () => {
+    if (saying === utterance) {
+      saying = null;
+      call("voiceSpeaking", false).catch(() => {});
+    }
+  };
+  utterance.onend = utterance.onerror = done;
+  call("voiceSpeaking", true).catch(() => {});
+  speechSynthesis.speak(utterance);
+  // Belt and braces: synthesis sometimes never fires onend.
+  setTimeout(done, Math.min(60_000, 2000 + text.length * 90));
+}
+
 // For the test harness.
-window.__panel = { addFiles };
+window.__panel = { addFiles, say, audio };

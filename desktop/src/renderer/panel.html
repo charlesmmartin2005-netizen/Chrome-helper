@@ -38,6 +38,21 @@
               <button id="summarize" type="button" hidden>Analyze</button>
             </div>
 
+            <div class="voice-bar" role="group" aria-label="Voice">
+              <button id="voice-ears" type="button" title="Wake words: say “All-Mind, hello” or “Scriptorium” to open All-Mind">Ears</button>
+              <button id="voice-socrates" type="button" title="Socrates: talk with All-Mind about what it has analyzed (say “All-Mind, initiate Socrates”)">Socrates</button>
+              <button id="voice-scribe" type="button" title="Scribe: transcribe and take notes of everything it hears (say “All-Mind, initiate Scribe”)">Scribe</button>
+              <span class="seg-toggle" role="group" aria-label="Where to listen">
+                <button id="voice-in" type="button" title="Listen in: the audio this computer is playing (say “All-Mind, listen in”)">In</button>
+                <button id="voice-out" type="button" title="Listen out: the microphone (say “All-Mind, listen out”)">Out</button>
+              </span>
+              <button id="voice-stop" type="button" class="stop" title="Stop the voice mode (say “All-Mind, stop”)" hidden>Stop</button>
+            </div>
+            <div id="voice-status" class="voice-status mono small" hidden>
+              <span id="voice-status-text"></span>
+              <button id="voice-download" type="button" hidden>Download</button>
+            </div>
+
             <form id="link-row" class="link-row" hidden>
               <input id="link-input" type="url" placeholder="https://… link to a PDF, document or image" spellcheck="false" aria-label="Link to a file" />
               <button id="link-go" class="primary" type="submit">Fetch</button>
@@ -53,6 +68,18 @@
             <div id="captures" class="captures" hidden></div>
             <p id="captures-hint" class="muted hint" hidden>Long document: scroll and capture again. The captures are analyzed together.</p>
 
+            <section id="transcript" class="transcript" hidden>
+              <div class="transcript-head">
+                <span class="mono small muted">transcript</span>
+                <span class="spacer"></span>
+                <button id="notes-now" class="small" type="button" title="Write or update the notes now">Make notes</button>
+                <button id="transcript-copy" class="small" type="button">Copy</button>
+                <button id="transcript-save" class="small" type="button" title="Save the transcript as a text file">Save</button>
+                <button id="transcript-clear" class="small" type="button" title="Forget what was heard so far">Clear</button>
+              </div>
+              <div id="transcript-log" class="transcript-log" aria-live="polite"></div>
+            </section>
+
             <div class="segrow">
               <span class="mono muted small seglabel">analysis</span>
               <div id="segbar" class="segbar" aria-hidden="true"></div>
@@ -67,7 +94,7 @@
               <p id="notice-text"></p>
               <button id="notice-action" type="button" hidden></button>
             </div>
-            <p id="empty" class="empty mono">no input · Screen or <kbd id="hotkey-capture">Ctrl+Shift+S</kbd> · open a File, drop files here, or paste a Link</p>
+            <p id="empty" class="empty mono">no input · Screen or <kbd id="hotkey-capture">Ctrl+Shift+S</kbd> · open a File, drop files here, or paste a Link · or say “All-Mind, initiate Scribe”</p>
 
             <div id="result" hidden>
               <div class="style-row">
@@ -106,6 +133,17 @@
             <input id="opacity" type="range" min="40" max="100" step="1" />
             <p class="muted hint">How see-through the panel is. Text always stays solid.</p>
             <label class="check"><input id="launchAtLogin" type="checkbox" /> Start when I log in</label>
+            <h3 class="mono">voice</h3>
+            <label class="check"><input id="voiceActivation" type="checkbox" /> Wake words: keep listening on the microphone for “All-Mind, hello” / “Scriptorium”</label>
+            <label class="check"><input id="voiceSpeak" type="checkbox" /> Speak answers and confirmations aloud</label>
+            <label for="voiceModel">Speech recognition model (runs on this computer)</label>
+            <select id="voiceModel"></select>
+            <div class="row">
+              <span id="voice-model-status" class="muted hint"></span>
+              <span class="spacer"></span>
+              <button id="voice-model-download" type="button" hidden>Download</button>
+            </div>
+            <p class="muted hint">Say <b>“All-Mind, initiate Socrates”</b> to talk about what it has read, <b>“All-Mind, initiate Scribe”</b> to take notes of what it hears, <b>“All-Mind, listen in”</b> for the computer's audio, <b>“All-Mind, listen out”</b> for the microphone, and <b>“All-Mind, stop”</b>. Speech is recognized on this computer; only the words go to Claude.</p>
             <h3 class="mono">shortcuts</h3>
             <p class="muted hint">Show / hide: <kbd id="hk-toggle"></kbd> · Summarize screen: <kbd id="hk-capture"></kbd></p>
             <p id="hotkey-warning" class="warning" hidden></p>

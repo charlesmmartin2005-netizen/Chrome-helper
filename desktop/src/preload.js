@@ -47,6 +47,22 @@ contextBridge.exposeInMainWorld("desktop", {
   saveTextFile: invoke("shell:saveText"),
   quit: invoke("app:quit"),
 
+  // Voice: wake words, Socrates (dialog) and Scribe (notes) modes.
+  voiceGet: invoke("voice:get"),
+  voiceSet: invoke("voice:set"),
+  voiceDownload: invoke("voice:download"),
+  voiceSpeaking: invoke("voice:speaking"),
+  voiceNotes: invoke("voice:notes"),
+  voiceTranscript: invoke("voice:transcript"),
+  voiceClear: invoke("voice:clear"),
+  voiceCaptureStopped: invoke("voice:captureStopped"),
+  sendAudio: (source, samples) => ipcRenderer.send("voice:audio", { source, samples }),
+  onVoiceState: listen("voice:state"),
+  onVoiceTranscript: listen("voice:transcript"),
+  onVoiceHeard: listen("voice:heard"),
+  onVoiceSay: listen("voice:say"),
+  onVoiceCommand: listen("voice:command"),
+
   onStream: listen("ai:stream"),
   onCapture: listen("capture:added"),
   onCommand: listen("command"),
