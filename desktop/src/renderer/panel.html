@@ -47,6 +47,7 @@
                 <button id="voice-out" type="button" title="Listen out: the microphone (say “All-Mind, listen out”)">Out</button>
               </span>
               <button id="voice-stop" type="button" class="stop" title="Stop the voice mode (say “All-Mind, stop”)" hidden>Stop</button>
+              <button id="voice-talk" type="button" title="Whether All-Mind talks: answers and confirmations read aloud">Speak</button>
             </div>
             <div id="voice-status" class="voice-status mono small" hidden>
               <span id="voice-status-text"></span>
@@ -106,13 +107,14 @@
               </div>
               <article id="summary" class="summary" aria-live="polite"></article>
               <p id="meta" class="meta mono"></p>
-              <div id="chat-log" class="chat-log"></div>
               <div id="tools" class="tools"></div>
-              <form id="ask-form" class="ask">
-                <textarea id="ask-input" rows="1" placeholder="query > _" aria-label="Ask about what's on screen"></textarea>
-                <button id="ask-send" class="primary" type="submit">Send</button>
-              </form>
             </div>
+
+            <div id="chat-log" class="chat-log"></div>
+            <form id="ask-form" class="ask">
+              <textarea id="ask-input" rows="1" placeholder="query > _" aria-label="Ask All-Mind"></textarea>
+              <button id="ask-send" class="primary" type="submit">Send</button>
+            </form>
           </section>
 
           <section id="settings-view" class="view" hidden>
@@ -136,6 +138,13 @@
             <h3 class="mono">voice</h3>
             <label class="check"><input id="voiceActivation" type="checkbox" /> Wake words: keep listening on the microphone for “All-Mind, hello” / “Scriptorium”</label>
             <label class="check"><input id="voiceSpeak" type="checkbox" /> Speak answers and confirmations aloud</label>
+            <label for="voiceOutput">Voice (All-Mind's own voices run on this computer; about 100 MB, once)</label>
+            <select id="voiceOutput"></select>
+            <div class="row">
+              <span id="voice-output-status" class="muted hint"></span>
+              <span class="spacer"></span>
+              <button id="voice-output-download" type="button" hidden>Download voice</button>
+            </div>
             <label for="voiceModel">Speech recognition model (runs on this computer)</label>
             <select id="voiceModel"></select>
             <div class="row">

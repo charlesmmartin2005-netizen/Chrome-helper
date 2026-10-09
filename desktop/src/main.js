@@ -10,6 +10,7 @@ import { captureScreen, captureRegion, listWindows, captureWindow, pickerPaths, 
 import { pickFiles, readLocalFile, downloadFile, makeAttachment, textAttachment } from "./files.js";
 import { VoiceEngine, VOICE_MODELS, modelReady, downloadModel } from "./voice.js";
 import { parseCommand, COMMANDS } from "./voice-commands.js";
+import { TtsEngine, TTS_VOICES, ttsReady, downloadTts } from "./tts.js";
 import { installDisplayMediaHandler, addDisplayMediaHandler, loopbackAudioHandler } from "./media.js";
 import { summaryParams, answerParams, dialogParams, notesParams } from "./prompts.js";
 import { MODELS } from "../../src/settings.js";
@@ -188,6 +189,7 @@ function updateTrayMenu() {
       { label: voice.mode === "scribe" ? "Stop Scribe (notes)" : "Voice: Scribe — take notes of what it hears", click: () => { setVoice({ mode: voice.mode === "scribe" ? "off" : "scribe" }); showPanel(true); } },
       { label: "Listen in (the computer's audio)", type: "checkbox", checked: voice.source === "in", click: (item) => setVoice({ source: item.checked ? "in" : "out" }) },
       { label: "Wake words (“All-Mind, hello”)", type: "checkbox", checked: settings.voiceActivation, click: (item) => applySettings({ voiceActivation: item.checked }) },
+      { label: "Speak aloud", type: "checkbox", checked: settings.voiceSpeak, click: (item) => { applySettings({ voiceSpeak: item.checked }); if (!item.checked) send("voice:hush", {}); } },
       { type: "separator" },
       { label: "Quit All-Mind", click: () => { app.quitting = true; app.quit(); } },
     ]),
@@ -225,14 +227,15 @@ function applySettings(changes) {
     ensureVoiceEngine();
   }
   if ("voiceActivation" in changes && settings.voiceActivation) ensureVoiceEngine();
-  if (["voiceActivation", "voiceSpeak", "voiceModel"].some((key) => key in changes)) pushVoiceState();
+  if ("voiceOutput" in changes && settings.voiceOutput !== "system") ensureTts();
+  if (["voiceActivation", "voiceSpeak", "voiceModel", "voiceOutput"].some((key) => key in changes)) pushVoiceState();
   updateTrayMenu();
   send("settings:changed", publicSettings());
   return publicSettings();
 }
 
 function publicSettings() {
-  return { ...settings, hasKey: Boolean(loadApiKey()), hotkeys: { ...hotkeys }, version: app.getVersion(), platform: process.platform, voiceModels: Object.fromEntries(Object.entries(VOICE_MODELS).map(([k, v]) => [k, v.label])) };
+  return { ...settings, hasKey: Boolean(loadApiKey()), hotkeys: { ...hotkeys }, version: app.getVersion(), platform: process.platform, voiceModels: Object.fromEntries(Object.entries(VOICE_MODELS).map(([k, v]) => [k, v.label])), voiceOutputs: { ...Object.fromEntries(Object.entries(TTS_VOICES).map(([k, v]) => [k, `All-Mind voice: ${v.label}`])), system: "Windows voice (built in)" } };
 }
 
 // ---------------------------------------------------------------- captures
@@ -310,6 +313,7 @@ function resetState() {
   voice.transcript = [];
   voice.newChars = 0;
   voice.notesAt = 0;
+  voice.pendingQuestion = null;
   send("state:reset", {});
   pushVoiceState();
 }
@@ -330,6 +334,10 @@ const voice = {
   newChars: 0,
   notesAt: 0,
   pendingQuestion: null, // said while an answer was still streaming
+  tts: null,
+  ttsState: "none", // none | missing | downloading | loading | ready | error
+  ttsProgress: null,
+  ttsError: null,
 };
 
 const engineReady = () => voice.engineState === "ready" && Boolean(voice.engine);
@@ -360,7 +368,71 @@ function voiceState() {
     transcript: voice.transcript.length,
     loopback: process.platform === "win32",
     commands: Object.fromEntries(Object.entries(COMMANDS).map(([k, v]) => [k, v.label])),
+    tts: voice.ttsState,
+    ttsProgress: voice.ttsProgress,
+    ttsError: voice.ttsError,
+    ttsReady: ttsReady(),
+    output: settings.voiceOutput,
   };
+}
+
+// All-Mind's own voice: loads when its model is here, downloads it when asked.
+async function ensureTts({ download = false } = {}) {
+  if (voice.ttsState === "ready" && voice.tts) return true;
+  if (voice.ttsState === "downloading" || voice.ttsState === "loading") return false;
+  if (!ttsReady()) {
+    if (!download) {
+      voice.ttsState = "missing";
+      pushVoiceState();
+      return false;
+    }
+    voice.ttsState = "downloading";
+    voice.ttsError = null;
+    voice.ttsProgress = { phase: "download", received: 0, total: 103_300_000 };
+    pushVoiceState();
+    try {
+      await downloadTts((progress) => {
+        voice.ttsProgress = progress;
+        send("voice:state", voiceState());
+      });
+    } catch (err) {
+      voice.ttsState = "error";
+      voice.ttsError = `The voice download failed: ${err.message}`;
+      voice.ttsProgress = null;
+      pushVoiceState();
+      return false;
+    }
+  }
+  voice.ttsState = "loading";
+  voice.ttsProgress = null;
+  pushVoiceState();
+  try {
+    voice.tts?.dispose();
+    voice.tts = await new TtsEngine().load();
+    voice.ttsState = "ready";
+    voice.ttsError = null;
+  } catch (err) {
+    voice.tts = null;
+    voice.ttsState = "error";
+    voice.ttsError = `The voice couldn't start: ${err.message}`;
+  }
+  pushVoiceState();
+  return voice.ttsState === "ready";
+}
+
+// Speaks through the neural voice, streaming sentences to the page as
+// tts:audio { id, samples, sampleRate } and finally { id, last: true }.
+async function ttsSpeak({ id, text }) {
+  if (!voice.tts || voice.ttsState !== "ready") throw new Error("The All-Mind voice isn't ready; the Windows voice is used instead.");
+  voice.speaking = true;
+  send("voice:state", voiceState());
+  try {
+    const finished = await voice.tts.speak(text, { voice: settings.voiceOutput }, (chunk) => send("tts:audio", { id, ...chunk }));
+    send("tts:audio", { id, last: true, cancelled: !finished });
+  } catch (err) {
+    send("tts:audio", { id, last: true, error: err.message });
+    throw err;
+  }
 }
 
 function pushVoiceState() {
@@ -636,7 +708,7 @@ async function runSummary() {
 }
 
 async function runAnswer({ question, label = null, structured = false, voice: spoken = false }) {
-  if (!state.summary && !spoken) throw new Error("Summarize the screen first.");
+  if (!state.summary && structured) throw new Error("Capture something or open a file first.");
   stopRun();
   const id = ++runCounter;
   const history = state.chat.map(({ q, a }) => ({ q, a }));
@@ -721,7 +793,7 @@ function friendlyError(err) {
 function registerIpc() {
   handle("settings:get", () => publicSettings());
   handle("settings:save", (changes) => {
-    const allowed = ["model", "length", "style", "focus", "launchAtLogin", "hotkeyToggle", "hotkeyCapture", "opacity", "voiceActivation", "voiceSpeak", "voiceModel"];
+    const allowed = ["model", "length", "style", "focus", "launchAtLogin", "hotkeyToggle", "hotkeyCapture", "opacity", "voiceActivation", "voiceSpeak", "voiceModel", "voiceOutput"];
     const clean = Object.fromEntries(Object.entries(changes ?? {}).filter(([k]) => allowed.includes(k)));
     if (clean.model && !MODELS[clean.model]) delete clean.model;
     return applySettings(clean);
@@ -780,8 +852,19 @@ function registerIpc() {
   handle("voice:download", async () => {
     await ensureVoiceEngine({ download: true });
     if (voice.engineState === "error") throw new Error(voice.error);
+    if (settings.voiceOutput !== "system") {
+      await ensureTts({ download: true });
+      if (voice.ttsState === "error") throw new Error(voice.ttsError);
+    }
     return voiceState();
   });
+  handle("tts:download", async () => {
+    await ensureTts({ download: true });
+    if (voice.ttsState === "error") throw new Error(voice.ttsError);
+    return voiceState();
+  });
+  handle("tts:speak", (payload) => ttsSpeak(payload ?? {}));
+  handle("tts:stop", () => voice.tts?.stop());
   handle("voice:speaking", (on) => {
     voice.speaking = Boolean(on);
     send("voice:state", voiceState());
@@ -837,6 +920,7 @@ if (!gotLock) {
     registerHotkeys();
     // Wake words need the speech engine; it loads if the model is already here.
     ensureVoiceEngine();
+    if (settings.voiceOutput !== "system") ensureTts();
     if (process.platform === "darwin") app.dock?.hide();
   });
   app.on("window-all-closed", (event) => event?.preventDefault?.());

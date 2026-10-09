@@ -22,9 +22,12 @@ export const DEFAULTS = {
   voiceActivation: true,
   voiceModel: "moonshine-base",
   voiceSpeak: true,
+  // Which voice speaks: a Kokoro speaker key, or "system" for the Windows voice.
+  voiceOutput: "george",
 };
 
 const VOICE_MODEL_KEYS = ["moonshine-tiny", "moonshine-base"];
+const VOICE_OUTPUT_KEYS = ["george", "lewis", "emma", "isabella", "adam", "michael", "system"];
 
 const dir = () => app.getPath("userData");
 const settingsFile = () => path.join(dir(), "settings.json");
@@ -47,6 +50,7 @@ export function loadSettings() {
   if (!VOICE_MODEL_KEYS.includes(settings.voiceModel)) settings.voiceModel = DEFAULTS.voiceModel;
   settings.voiceActivation = Boolean(settings.voiceActivation);
   settings.voiceSpeak = Boolean(settings.voiceSpeak);
+  if (!VOICE_OUTPUT_KEYS.includes(settings.voiceOutput)) settings.voiceOutput = DEFAULTS.voiceOutput;
   return settings;
 }
 

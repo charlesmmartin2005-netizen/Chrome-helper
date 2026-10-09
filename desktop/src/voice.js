@@ -54,9 +54,19 @@ export async function downloadModel(key, onProgress = () => {}) {
   }
   const dir = modelDir(key);
   if (modelReady(key)) return dir;
+  return downloadArchive({ url: `${modelBase()}${model.archive}.tar.bz2`, parent: voiceDir(), dir, required: MODEL_FILES, total: model.bytes, onProgress });
+}
+
+/**
+ * Downloads a .tar.bz2 model archive and unpacks it as it arrives into
+ * parent/ (the archive's own top folder becomes dir/). Marks dir with a
+ * .ready file once every required file is there.
+ */
+export async function downloadArchive({ url, parent, dir, required, total: fallbackTotal, onProgress = () => {} }) {
+  fs.mkdirSync(parent, { recursive: true });
   fs.rmSync(dir, { recursive: true, force: true });
-  const { body, total: declared } = await fetchStream(`${modelBase()}${model.archive}.tar.bz2`);
-  const total = declared || model.bytes;
+  const { body, total: declared } = await fetchStream(url);
+  const total = declared || fallbackTotal;
   let received = 0;
   let last = 0;
   const counter = new Transform({
@@ -70,10 +80,9 @@ export async function downloadModel(key, onProgress = () => {}) {
     },
   });
   try {
-    // The archive is unpacked as it arrives; only the model files are kept.
-    await pipeline(body, counter, bz2(), tar.x({ cwd: voiceDir(), filter: (entry) => !entry.includes("test_wavs") }));
-    const missing = MODEL_FILES.filter((f) => !fs.existsSync(path.join(dir, f)));
-    if (missing.length) throw new Error(`The speech model archive is missing ${missing.join(", ")}.`);
+    await pipeline(body, counter, bz2(), tar.x({ cwd: parent, filter: (entry) => !entry.includes("test_wavs") }));
+    const missing = required.filter((f) => !fs.existsSync(path.join(dir, f)));
+    if (missing.length) throw new Error(`The archive is missing ${missing.join(", ")}.`);
     fs.writeFileSync(path.join(dir, ".ready"), new Date().toISOString());
   } catch (err) {
     fs.rmSync(dir, { recursive: true, force: true });

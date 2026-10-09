@@ -12,7 +12,8 @@ const els = Object.fromEntries(
     "pill", "card", "new", "settings-button", "collapse", "main-view", "settings-view",
     "cap-screen", "cap-window", "cap-region", "cap-file", "cap-link", "link-row", "link-input", "link-cancel", "drop-hint",
     "summarize", "windows", "windows-list", "windows-cancel",
-    "voice-ears", "voice-socrates", "voice-scribe", "voice-in", "voice-out", "voice-stop", "voice-status", "voice-status-text", "voice-download",
+    "voice-ears", "voice-socrates", "voice-scribe", "voice-in", "voice-out", "voice-stop", "voice-talk", "voice-status", "voice-status-text", "voice-download",
+    "voiceOutput", "voice-output-status", "voice-output-download",
     "transcript", "transcript-log", "notes-now", "transcript-copy", "transcript-save", "transcript-clear",
     "voiceActivation", "voiceSpeak", "voiceModel", "voice-model-status", "voice-model-download",
     "captures", "captures-hint", "status", "status-text", "notice", "notice-text", "notice-action", "empty",
@@ -185,6 +186,15 @@ function applySettingsToUi() {
     }
   }
   els.voiceModel.value = settings.voiceModel ?? "";
+  if (!els.voiceOutput.options.length) {
+    for (const [key, label] of Object.entries(settings.voiceOutputs ?? {})) {
+      const option = document.createElement("option");
+      option.value = key;
+      option.textContent = label;
+      els.voiceOutput.append(option);
+    }
+  }
+  els.voiceOutput.value = settings.voiceOutput ?? "";
   els.style.value = settings.style;
   els.opacity.value = String(Math.round((settings.opacity ?? 0.92) * 100));
   applyOpacity(settings.opacity ?? 0.92);
@@ -522,7 +532,7 @@ async function summarize() {
 
 async function ask(raw, { label = null, structured = false } = {}) {
   const question = raw.trim();
-  if (!question || !state.summary || busyKind) return;
+  if (!question || busyKind) return;
   els.askInput.value = "";
   sizeAskInput();
   try {
@@ -616,6 +626,7 @@ function onAnswerEvent(event) {
     case "start": {
       busyKind = "answer";
       currentAnswer = appendExchange({ q: event.q, label: event.label });
+      els.empty.hidden = true;
       currentAnswer.answerEl.innerHTML = '<span class="spinner"></span> Processing…';
       setAsking(true);
       setSysStatus("DECODING", "live");
@@ -772,14 +783,13 @@ function renderState() {
     els.result.hidden = false;
     els.summary.innerHTML = renderMarkdown(state.summary.text);
     els.meta.textContent = summaryMeta(state.summary);
-    els.chatLog.replaceChildren();
-    for (const turn of state.chat) appendExchange(turn).metaEl.textContent = turnMeta(turn);
   } else {
     els.result.hidden = true;
     els.summary.innerHTML = "";
-    els.chatLog.replaceChildren();
   }
-  els.empty.hidden = state.captures.length > 0 || Boolean(state.summary);
+  els.chatLog.replaceChildren();
+  for (const turn of state.chat) appendExchange(turn).metaEl.textContent = turnMeta(turn);
+  els.empty.hidden = state.captures.length > 0 || Boolean(state.summary) || state.chat.length > 0;
   segments(state.summary ? "done" : "idle");
   setSysStatus(state.summary ? "SYS READY" : state.captures.length ? "CAPTURED" : "STANDBY");
   setAsking(false);
@@ -835,20 +845,28 @@ async function copySummary() {
 let listening = false;
 function toggleListen() {
   if (listening) return stopListening();
-  if (!state.summary?.text || !("speechSynthesis" in window)) return;
-  const utterance = new SpeechSynthesisUtterance(spokenText(state.summary.text));
-  utterance.rate = 1.05;
-  utterance.onend = utterance.onerror = () => stopListening(false);
+  if (!state.summary?.text) return;
   listening = true;
   els.listen.textContent = "Stop";
-  speechSynthesis.speak(utterance);
+  const text = spokenText(state.summary.text);
+  // Listen works even when All-Mind is otherwise muted: it was asked for.
+  if (voice?.tts === "ready" && voice.output !== "system") {
+    stopSpeaking(false);
+    const id = ++sayCounter;
+    ttsJob = { id, done: false, onDone: () => stopListening(false), timer: setTimeout(() => finishSpeaking(id), 180_000) };
+    call("voiceSpeaking", true).catch(() => {});
+    call("ttsSpeak", { id, text }).catch(() => {
+      if (ttsJob?.id === id) ttsJob = null;
+      saySystem(text, () => stopListening(false));
+    });
+  } else saySystem(text, () => stopListening(false));
 }
 
 function stopListening(cancel = true) {
   if (!listening) return;
   listening = false;
   els.listen.textContent = "Listen";
-  if (cancel) speechSynthesis.cancel();
+  if (cancel) stopSpeaking();
 }
 
 function spokenText(markdown) {
@@ -890,7 +908,22 @@ const audio = { out: null, in: null }; // running AudioSource per kind
 const audioBusy = { out: null, in: null };
 
 function setupVoice() {
-  for (const button of [els.voiceEars, els.voiceSocrates, els.voiceScribe, els.voiceIn, els.voiceOut, els.voiceStop]) {
+  els.voiceTalk.addEventListener("click", async () => {
+    settings = await call("saveSettings", { voiceSpeak: !settings.voiceSpeak });
+    applySettingsToUi();
+    if (!settings.voiceSpeak) stopSpeaking();
+  });
+  els.voiceOutput.addEventListener("change", async () => {
+    settings = await call("saveSettings", { voiceOutput: els.voiceOutput.value });
+    applySettingsToUi();
+  });
+  els.voiceOutputDownload.addEventListener("click", () => {
+    els.notice.hidden = true;
+    call("ttsDownload").catch((err) => showNotice(err.message));
+  });
+  window.desktop.onTtsAudio(onTtsAudio);
+  window.desktop.onVoiceHush?.(() => stopSpeaking());
+  for (const button of [els.voiceEars, els.voiceSocrates, els.voiceScribe, els.voiceIn, els.voiceOut, els.voiceStop, els.voiceTalk]) {
     button.addEventListener("click", () => {
       audioFailed.out = false;
       audioFailed.in = false;
@@ -971,8 +1004,11 @@ function applyVoiceState(next) {
   els.voiceSocrates.classList.toggle("live", next.mode === "socrates" && (next.capture.out || next.capture.in));
   els.voiceScribe.classList.toggle("live", next.mode === "scribe" && (next.capture.out || next.capture.in));
   els.voiceStop.hidden = next.mode === "off";
+  on(els.voiceTalk, next.speak);
+  els.voiceTalk.title = next.speak ? "All-Mind talks: answers and confirmations are read aloud. Click to mute." : "All-Mind is muted. Click to let it talk.";
   els.transcript.hidden = next.mode !== "scribe" && next.transcript === 0;
-  els.voiceDownload.hidden = !(next.engine === "missing" || next.engine === "error");
+  const wantsOwnVoice = next.speak && next.output !== "system";
+  els.voiceDownload.hidden = !(next.engine === "missing" || next.engine === "error" || (wantsOwnVoice && (next.tts === "missing" || next.tts === "error")));
   const pct = next.progress?.total ? Math.min(100, Math.round((next.progress.received / next.progress.total) * 100)) : 0;
   if (next.engine === "downloading") setVoiceStatus(`downloading speech model · ${pct}% of ${Math.round((next.progress?.total ?? 0) / 1048576)} MB (once)`, "live");
   else if (next.engine === "loading") setVoiceStatus("loading speech model…", "live");
@@ -980,12 +1016,18 @@ function applyVoiceState(next) {
   else if (next.engine === "missing") setVoiceStatus(`voice needs the speech model (${next.modelLabel.split("(")[1]?.replace(")", "") ?? "download"}, once) ›`, "");
   else if (next.engine === "ready") {
     const where = next.source === "in" ? "listening in (computer audio)" : "listening out (microphone)";
+    const ttsPct = next.ttsProgress?.total ? Math.min(100, Math.round((next.ttsProgress.received / next.ttsProgress.total) * 100)) : 0;
+    const voiceNote = !wantsOwnVoice ? "" : next.tts === "downloading" ? ` · downloading voice ${ttsPct}%` : next.tts === "loading" ? " · loading voice…" : next.tts === "missing" ? " · own voice not downloaded ›" : next.tts === "error" ? ` · ${next.ttsError}` : "";
     if (next.speaking) setVoiceStatus("speaking…", "live");
-    else if (next.mode === "socrates") setVoiceStatus(`socrates · ${where} · ask away`, "live");
-    else if (next.mode === "scribe") setVoiceStatus(`scribe · ${where} · taking notes`, "live");
-    else if (next.ears) setVoiceStatus("wake words on · say “all-mind, hello”", "");
-    else setVoiceStatus("voice ready · wake words off", "");
+    else if (next.mode === "socrates") setVoiceStatus(`socrates · ${where} · ask away${voiceNote}`, "live");
+    else if (next.mode === "scribe") setVoiceStatus(`scribe · ${where} · taking notes${voiceNote}`, "live");
+    else if (next.ears) setVoiceStatus(`wake words on · say “all-mind, hello”${voiceNote}`, "");
+    else setVoiceStatus(`voice ready · wake words off${voiceNote}`, "");
   } else els.voiceStatus.hidden = true;
+  const outPct = next.ttsProgress?.total ? Math.min(100, Math.round((next.ttsProgress.received / next.ttsProgress.total) * 100)) : 0;
+  els.voiceOutputStatus.textContent =
+    next.output === "system" ? "Uses the voice built into Windows." : next.tts === "downloading" ? `Downloading… ${outPct}%` : next.tts === "loading" ? "Loading…" : next.tts === "error" ? next.ttsError : next.ttsReady ? "Downloaded and ready." : "Not downloaded yet; the Windows voice is used until it is.";
+  els.voiceOutputDownload.hidden = next.output === "system" || next.ttsReady || next.tts === "downloading" || next.tts === "loading";
   // Settings view
   els.voiceModelStatus.textContent =
     next.engine === "downloading" ? `Downloading… ${pct}%` : next.engine === "loading" ? "Loading…" : next.engine === "error" ? next.error : next.modelReady ? "Downloaded and ready." : "Not downloaded yet.";
@@ -1061,19 +1103,57 @@ function addTranscriptLine(entry) {
   els.transcriptLog.scrollTop = els.transcriptLog.scrollHeight;
 }
 
-// Spoken confirmations and answers. The main process ignores what it hears
-// while this is speaking so it doesn't answer itself.
-let saying = null;
-function say(text) {
-  if (!("speechSynthesis" in window) || !voice?.speak || !text) return;
+// Spoken confirmations and answers. All-Mind's own neural voice when it is
+// downloaded, the Windows voice otherwise. The main process ignores what it
+// hears while this is speaking so it doesn't answer itself.
+let saying = null; // the current system-voice utterance
+let sayCounter = 0;
+let ttsJob = null; // { id, done, onDone, timer }
+let playContext = null;
+let playAt = 0;
+let playingSources = [];
+const played = { chunks: 0, samples: 0, texts: [] };
+
+function say(text, { onDone } = {}) {
+  if (!voice?.speak || !text) {
+    onDone?.();
+    return;
+  }
+  stopSpeaking(false);
+  if (voice.tts === "ready" && voice.output !== "system") {
+    const id = ++sayCounter;
+    played.texts.push(text);
+    ttsJob = { id, done: false, onDone, timer: setTimeout(() => finishSpeaking(id), 90_000) };
+    call("voiceSpeaking", true).catch(() => {});
+    call("ttsSpeak", { id, text }).catch(() => {
+      // The neural voice failed mid-way: fall back to the system voice.
+      if (ttsJob?.id === id) {
+        ttsJob = null;
+        saySystem(text, onDone);
+      }
+    });
+    return;
+  }
+  saySystem(text, onDone);
+}
+
+function saySystem(text, onDone) {
+  if (!("speechSynthesis" in window)) {
+    onDone?.();
+    return;
+  }
   speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = 1.05;
+  const chosen = pickSystemVoice();
+  if (chosen) utterance.voice = chosen;
+  utterance.rate = 0.98;
+  utterance.pitch = 0.9;
   saying = utterance;
   const done = () => {
     if (saying === utterance) {
       saying = null;
       call("voiceSpeaking", false).catch(() => {});
+      onDone?.();
     }
   };
   utterance.onend = utterance.onerror = done;
@@ -1083,5 +1163,74 @@ function say(text) {
   setTimeout(done, Math.min(60_000, 2000 + text.length * 90));
 }
 
+// The most British-sounding male voice Windows has to offer.
+function pickSystemVoice() {
+  const voices = speechSynthesis.getVoices?.() ?? [];
+  const score = (v) =>
+    (/en[-_]GB/i.test(v.lang) ? 4 : /^en/i.test(v.lang) ? 1 : 0) +
+    (/george|ryan|james|daniel|oliver|thomas|arthur|brian|alfie|male/i.test(v.name) ? 2 : 0) -
+    (/hazel|susan|zira|sonia|libby|maisie|abbi|bella|female|cortana/i.test(v.name) ? 2 : 0);
+  return [...voices].sort((a, b) => score(b) - score(a))[0] ?? null;
+}
+
+// Neural audio arrives sentence by sentence and is queued back to back.
+function onTtsAudio({ id, samples, sampleRate, last, error }) {
+  if (!ttsJob || ttsJob.id !== id) return;
+  if (samples?.length) {
+    const context = (playContext ??= (window.__panel?.playbackContextFactory ?? (() => new AudioContext()))());
+    const buffer = context.createBuffer(1, samples.length, sampleRate);
+    buffer.copyToChannel(samples instanceof Float32Array ? samples : Float32Array.from(samples), 0);
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(context.destination);
+    const startAt = Math.max(context.currentTime + 0.03, playAt);
+    source.start(startAt);
+    playAt = startAt + buffer.duration;
+    playingSources.push(source);
+    played.chunks++;
+    played.samples += samples.length;
+    source.onended = () => {
+      playingSources = playingSources.filter((s) => s !== source);
+      if (ttsJob?.id === id && ttsJob.done && playingSources.length === 0) finishSpeaking(id);
+    };
+    context.resume?.().catch?.(() => {});
+  }
+  if (last || error) {
+    ttsJob.done = true;
+    if (error) showNotice(`The All-Mind voice stopped: ${error}`);
+    if (playingSources.length === 0) finishSpeaking(id);
+  }
+}
+
+function finishSpeaking(id) {
+  if (!ttsJob || ttsJob.id !== id) return;
+  clearTimeout(ttsJob.timer);
+  const { onDone } = ttsJob;
+  ttsJob = null;
+  playAt = 0;
+  call("voiceSpeaking", false).catch(() => {});
+  onDone?.();
+}
+
+function stopSpeaking(notify = true) {
+  if (ttsJob) {
+    clearTimeout(ttsJob.timer);
+    ttsJob = null;
+    call("ttsStop").catch(() => {});
+  }
+  for (const source of playingSources) {
+    try {
+      source.stop();
+    } catch {
+      // Already stopped.
+    }
+  }
+  playingSources = [];
+  playAt = 0;
+  if ("speechSynthesis" in window) speechSynthesis.cancel();
+  saying = null;
+  if (notify) call("voiceSpeaking", false).catch(() => {});
+}
+
 // For the test harness.
-window.__panel = { addFiles, say, audio };
+window.__panel = { addFiles, say, stopSpeaking, audio, played, playbackContextFactory: null };
